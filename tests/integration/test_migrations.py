@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import psycopg
 import pytest
 
 from policy_assistant.db.connection import connect
@@ -17,6 +18,7 @@ def test_migrations_are_idempotent_and_pgvector_is_new_enough(db_dsn: str) -> No
     with connect(db_dsn) as conn:
         assert pending_migrations(conn) == []
         assert migrate(conn) == []
+        assert "0003_answer_audit.sql" in applied_checksums(conn)
         row = conn.execute(
             "SELECT extversion FROM pg_extension WHERE extname = 'vector'"
         ).fetchone()
@@ -38,3 +40,25 @@ def test_tampered_checksum_is_detected(db_dsn: str) -> None:
         conn.commit()
         with pytest.raises(MigrationError, match=r"0001_init\.sql"):
             migrate(conn)
+
+
+def test_answer_audit_is_append_only(db_dsn: str) -> None:
+    with connect(db_dsn, autocommit=True) as conn:
+        conn.execute(
+            """
+            INSERT INTO answer_audit (
+                actor, principal_groups, question, question_language, outcome,
+                answer_text, retrieval, prompt_version, pipeline_fingerprint,
+                latency_ms
+            ) VALUES (
+                'test', ARRAY['all_staff'], 'question', 'en', 'error',
+                'text', '{}'::jsonb, 'answer-v1', 'fingerprint', '{}'::jsonb
+            )
+            """
+        )
+        with pytest.raises(psycopg.Error, match="append-only"):
+            conn.execute("UPDATE answer_audit SET actor = 'other'")
+        with pytest.raises(psycopg.Error, match="append-only"):
+            conn.execute("DELETE FROM answer_audit")
+        with pytest.raises(psycopg.Error, match="append-only"):
+            conn.execute("TRUNCATE answer_audit")
