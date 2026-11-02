@@ -16,7 +16,7 @@ from policy_assistant.config import Settings, find_repo_root, get_settings
 from policy_assistant.db.connection import connect, utc_now
 from policy_assistant.db.migrate import applied_checksums, migrate, pending_migrations
 from policy_assistant.ingest.extract import ExtractionError, extract_pages
-from policy_assistant.ingest.fetch import fetch_documents
+from policy_assistant.ingest.fetch import fetch_documents, sha256_file
 from policy_assistant.ingest.manifest import DocumentSpec, Manifest, ManifestError
 from policy_assistant.ingest.pipeline import (
     IngestError,
@@ -193,30 +193,40 @@ def corpus_validate(
         list[str] | None, typer.Option("--doc", help="Document id (repeatable).")
     ] = None,
 ) -> None:
-    """Validate the manifest, extract every source, and summarize quality."""
+    """Validate the manifest and source files without extraction.
+
+    Prints OK, MISSING, MISMATCH, or UNPINNED per document. Exit 1 on any
+    MISSING or MISMATCH, else 0.
+    """
     _configure_logging()
     try:
         manifest, _, settings = _load_manifest(manifest_option)
+        documents = manifest.selected(document_ids)
     except ManifestError as exc:
         typer.secho(str(exc), err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1) from exc
 
-    assessed, errors = _assess_documents(manifest, settings, document_ids)
-    quarantined = 0
-    for document, raw_pages, assessment in assessed:
-        typer.echo(
-            f"{document.id}: {assessment.verdict}"
-            + (f" ({assessment.reason})" if assessment.reason else "")
-            + f", pages={len(raw_pages)}, included={len(assessment.included_pages())}"
-        )
-        if assessment.verdict == "quarantined":
-            quarantined += 1
-    for document_id, message in errors:
-        typer.secho(f"{document_id}: error: {message}", err=True, fg=typer.colors.RED)
-    if errors:
+    root = find_repo_root()
+    failed = False
+    for document in documents:
+        path = manifest.document_path(document, root, settings.data_dir)
+        status: str
+        try:
+            if not path.is_file():
+                status = "MISSING"
+            elif document.sha256 is None:
+                status = "UNPINNED"
+            elif sha256_file(path) == document.sha256:
+                status = "OK"
+            else:
+                status = "MISMATCH"
+        except OSError:
+            status = "MISSING"
+        typer.echo(f"{status} {document.id}")
+        if status in {"MISSING", "MISMATCH"}:
+            failed = True
+    if failed:
         raise typer.Exit(code=1)
-    if quarantined:
-        raise typer.Exit(code=2)
 
 
 def _dump_page(path: Path, page_number: int, text: str) -> None:
