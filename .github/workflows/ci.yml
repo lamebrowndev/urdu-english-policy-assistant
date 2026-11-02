@@ -39,6 +39,10 @@ jobs:
               "policy_assistant/db/migrations/0004_accounts_reviews.sql",
               "policy_assistant/text/stopwords/en.txt",
               "policy_assistant/text/stopwords/ur.txt",
+              "policy_assistant/web/templates/base.html",
+              "policy_assistant/web/static/app.css",
+              "policy_assistant/web/static/app.js",
+              "policy_assistant/web/static/fonts/NotoNastaliqUrdu-wght.ttf",
           }
           missing = required - names
           if missing:
