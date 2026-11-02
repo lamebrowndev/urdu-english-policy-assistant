@@ -503,7 +503,7 @@ def stats_command() -> None:
     typer.echo(f"chunks missing bm25 data: {missing_bm25[0] if missing_bm25 else 0}")
 
 
-def _index_is_complete(conn: psycopg.Connection[Any]) -> bool:
+def _index_problem(conn: psycopg.Connection[Any], settings: Settings) -> str | None:
     row = conn.execute(
         """
         SELECT count(*) FROM chunks c
@@ -515,7 +515,20 @@ def _index_is_complete(conn: psycopg.Connection[Any]) -> bool:
            )
         """
     ).fetchone()
-    return row is not None and int(row[0]) == 0
+    if row is not None and int(row[0]) > 0:
+        return "index incomplete: run upa ingest"
+    stale = conn.execute(
+        """
+        SELECT EXISTS (
+            SELECT 1 FROM documents
+            WHERE pipeline_fingerprint IS DISTINCT FROM %s
+        )
+        """,
+        (pipeline_fingerprint(settings),),
+    ).fetchone()
+    if stale is not None and bool(stale[0]):
+        return "index built with a different pipeline: run upa ingest"
+    return None
 
 
 def _print_retrieval_result(result: RetrievalResult) -> None:
@@ -567,8 +580,9 @@ def retrieve_command(
     settings = get_settings()
     try:
         with closing(connect(settings.database_url)) as conn:
-            if not _index_is_complete(conn):
-                typer.echo("index incomplete: run upa ingest")
+            problem = _index_problem(conn, settings)
+            if problem is not None:
+                typer.echo(problem)
                 raise typer.Exit(code=1)
             embedder = SentenceTransformerEmbedder(settings)
             reranker = CrossEncoderReranker(settings)
@@ -677,8 +691,9 @@ def eval_retrieval(
     try:
         items = load_dataset(dataset)
         with closing(connect(settings.database_url)) as conn:
-            if not _index_is_complete(conn):
-                typer.echo("index incomplete: run upa ingest")
+            problem = _index_problem(conn, settings)
+            if problem is not None:
+                typer.echo(problem)
                 raise typer.Exit(code=1)
             embedder = SentenceTransformerEmbedder(settings)
             reranker = CrossEncoderReranker(settings)
@@ -737,8 +752,9 @@ def ask_command(
     settings = get_settings()
     try:
         with closing(connect(settings.database_url)) as conn:
-            if not _index_is_complete(conn):
-                typer.echo("index incomplete: run upa ingest")
+            problem = _index_problem(conn, settings)
+            if problem is not None:
+                typer.echo(problem)
                 raise typer.Exit(code=1)
             embedder = SentenceTransformerEmbedder(settings)
             reranker = CrossEncoderReranker(settings)
