@@ -1,0 +1,29 @@
+<article id="a-{{ item.audit_id }}" tabindex="-1" class="message">
+  <p class="meta">{{ t('chat_question') }}</p>
+  <div class="block" lang="{{ item.question|text_lang }}" dir="{{ item.question|text_dir }}">{{ item.question }}</div>
+  <p class="status">{{ t('status_' ~ item.status) }}</p>
+  {% if item.status == 'answered' %}
+    <p class="meta">{{ t('chat_answer') }}</p>
+    <div class="answer">
+      {% for segment in item.segments %}
+        <span class="block" lang="{{ segment.text|text_lang }}" dir="{{ segment.text|text_dir }}">{{ segment.text }}</span>
+        {% for number in segment.numbers %}
+          <sup class="cite"><a href="#src-{{ item.audit_id }}-{{ number }}">{{ number }}</a></sup>
+        {% endfor %}
+      {% endfor %}
+    </div>
+    {% if item.sources %}
+      <h2>{{ t('chat_sources') }}</h2>
+      <ol class="sources">
+        {% for source in item.sources %}
+          <li id="src-{{ item.audit_id }}-{{ source.number }}">
+            <p class="meta">{{ source.document_title }} &middot; {{ source.page_start|page_label(source.page_end) }}{% if source.section_heading %} &middot; {{ source.section_heading }}{% endif %}</p>
+            <div class="block cited" lang="{{ source.cited_text|text_lang }}" dir="{{ source.cited_text|text_dir }}">{{ source.cited_text }}</div>
+          </li>
+        {% endfor %}
+      </ol>
+    {% endif %}
+  {% else %}
+    <div class="block" lang="{{ item.text|text_lang }}" dir="{{ item.text|text_dir }}">{{ item.text }}</div>
+  {% endif %}
+</article>

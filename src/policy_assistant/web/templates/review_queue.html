@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block content %}
+  <h1>{{ t('review_title') }}</h1>
+  <form method="get" action="/review" class="filters">
+    <label for="status">{{ t('review_filter_status') }}</label>
+    <select id="status" name="status">
+      <option value="unreviewed" {% if selected_status == 'unreviewed' %}selected{% endif %}>{{ t('review_status_unreviewed') }}</option>
+      <option value="reviewed" {% if selected_status == 'reviewed' %}selected{% endif %}>{{ t('review_status_reviewed') }}</option>
+      <option value="all" {% if selected_status == 'all' %}selected{% endif %}>{{ t('review_status_all') }}</option>
+    </select>
+    <label for="outcome">{{ t('review_filter_outcome') }}</label>
+    <select id="outcome" name="outcome">
+      <option value="" {% if not selected_outcome %}selected{% endif %}>{{ t('review_outcome_any') }}</option>
+      {% for outcome in outcomes %}
+        <option value="{{ outcome }}" {% if selected_outcome == outcome %}selected{% endif %}>{{ t('outcome_' ~ outcome) }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit">{{ t('review_apply') }}</button>
+  </form>
+  {% if items %}
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>{{ t('review_created') }}</th>
+            <th>{{ t('review_actor') }}</th>
+            <th>{{ t('review_question') }}</th>
+            <th>{{ t('review_status') }}</th>
+            <th>{{ t('review_reviews') }}</th>
+            <th>{{ t('review_latest') }}</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in items %}
+            <tr>
+              <td>{{ item.created_at }}</td>
+              <td>{{ item.actor }}</td>
+              <td><span lang="{{ item.question|text_lang }}" dir="{{ item.question|text_dir }}">{{ item.question }}</span></td>
+              <td>{{ t('outcome_' ~ item.outcome) }}</td>
+              <td>{{ item.review_count }}</td>
+              <td>{% if item.latest_verdict %}{{ t('verdict_' ~ item.latest_verdict) }}{% else %}-{% endif %}</td>
+              <td><a href="/review/{{ item.audit_id }}">{{ t('review_open') }}</a></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% if older_url %}
+      <p><a href="{{ older_url }}">{{ t('chat_older') }}</a></p>
+    {% endif %}
+  {% else %}
+    <p>{{ t('review_empty') }}</p>
+  {% endif %}
+{% endblock %}

@@ -1,0 +1,6 @@
+{% extends "base.html" %}
+{% block content %}
+  <h1>{{ t('app_title') }}</h1>
+  <p class="banner" role="status" aria-live="polite">{{ message }}</p>
+  <p><a href="/">{{ t('back_to_chat') }}</a></p>
+{% endblock %}

@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block content %}
+  <h1>{{ t('chat_title') }}</h1>
+  {% if message %}
+    <p class="banner" role="status" aria-live="polite">{{ message }}</p>
+  {% endif %}
+  <form method="post" action="/ask" class="stack ask-form" data-busy="true">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="question">{{ t('chat_ask_label') }}</label>
+    <textarea id="question" name="question" rows="4" maxlength="{{ question_max_chars }}" required placeholder="{{ t('chat_ask_placeholder') }}"></textarea>
+    <button type="submit" data-busy-label="{{ t('chat_ask_busy') }}">{{ t('chat_ask_button') }}</button>
+  </form>
+  <section aria-labelledby="history-heading">
+    <h2 id="history-heading">{{ t('chat_history_title') }}</h2>
+    {% if items %}
+      {% for item in items %}
+        {% include "message.html" %}
+      {% endfor %}
+      {% if older_url %}
+        <p><a href="{{ older_url }}">{{ t('chat_older') }}</a></p>
+      {% endif %}
+    {% else %}
+      <p>{{ t('chat_empty') }}</p>
+    {% endif %}
+  </section>
+{% endblock %}

@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="{{ ui }}" dir="{{ 'rtl' if ui == 'ur' else 'ltr' }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ page_title or t('app_title') }}</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">{{ t('skip_link') }}</a>
+  <header class="site-header">
+    <nav class="site-nav" aria-label="{{ t('app_title') }}">
+      <a href="/">{{ t('nav_chat') }}</a>
+      {% if user and user.role in ['reviewer', 'admin'] %}
+        <a href="/review">{{ t('nav_review') }}</a>
+      {% endif %}
+      {% if user %}
+        <span class="who">{{ user.display_name }}</span>
+        <form method="post" action="/logout" class="inline-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="link-button">{{ t('nav_logout') }}</button>
+        </form>
+      {% else %}
+        <a href="/login">{{ t('nav_login') }}</a>
+      {% endif %}
+      <span class="lang-switch">
+        <a href="/set-language?lang=en&amp;next={{ current_path|urlencode }}">{{ t('language_toggle_en') }}</a>
+        <a href="/set-language?lang=ur&amp;next={{ current_path|urlencode }}">{{ t('language_toggle_ur') }}</a>
+      </span>
+    </nav>
+  </header>
+  <main id="main" tabindex="-1">
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

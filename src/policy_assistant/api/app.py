@@ -52,6 +52,8 @@ from policy_assistant.reviews.store import (
 from policy_assistant.reviews.store import (
     queue as review_queue,
 )
+from policy_assistant.web.routes import router as web_router
+from policy_assistant.web.routes import static_files
 
 LOGGER = logging.getLogger(__name__)
 
@@ -358,6 +360,9 @@ def create_app(
         if review is None:
             raise HTTPException(status_code=404, detail="not found")
         return review
+
+    api.mount("/static", static_files(), name="static")
+    api.include_router(web_router)
 
     @api.get("/healthz")
     def healthz(request: Request) -> Any:

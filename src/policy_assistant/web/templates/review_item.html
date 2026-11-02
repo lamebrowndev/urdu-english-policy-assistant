@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block content %}
+  <h1>{{ t('review_item_title') }}</h1>
+  {% if message %}
+    <p class="banner" role="status" aria-live="polite">{{ message }}</p>
+  {% endif %}
+  <h2>{{ t('review_question_heading') }}</h2>
+  <div class="block" lang="{{ item.question|text_lang }}" dir="{{ item.question|text_dir }}">{{ item.question }}</div>
+
+  <h2>{{ t('review_seen_heading') }}</h2>
+  <p class="status">{{ t('status_' ~ (item.outcome if item.outcome == 'answered' else ('error' if item.outcome == 'error' else 'abstained'))) }}</p>
+  <div class="block" lang="{{ item.answer_text|text_lang }}" dir="{{ item.answer_text|text_dir }}">{{ item.answer_text }}</div>
+  <p class="meta">{{ t('review_outcome') }}: {{ t('outcome_' ~ item.outcome) }}</p>
+  {% if flags %}
+    <p class="meta">{{ t('review_flags') }}: {{ flags|join(', ') }}</p>
+  {% endif %}
+
+  {% if sources %}
+    <h2>{{ t('review_sources_heading') }}</h2>
+    <ol class="sources">
+      {% for source in sources %}
+        <li>
+          <p class="meta">{{ source.document_title }} &middot; {{ source.page_start|page_label(source.page_end) }}{% if source.section_heading %} &middot; {{ source.section_heading }}{% endif %}</p>
+          <div class="block cited" lang="{{ source.cited_text|text_lang }}" dir="{{ source.cited_text|text_dir }}">{{ source.cited_text }}</div>
+        </li>
+      {% endfor %}
+    </ol>
+  {% endif %}
+
+  <h2>{{ t('review_context_heading') }}</h2>
+  {% for chunk_view in chunks %}
+    <section class="context-chunk">
+      <h3>{{ chunk_view.chunk.document_title }} &middot; {{ chunk_view.chunk.page_start|page_label(chunk_view.chunk.page_end) }}{% if chunk_view.chunk.section_heading %} &middot; {{ chunk_view.chunk.section_heading }}{% endif %}</h3>
+      <p class="meta">{{ t('review_rerank') }}: {{ chunk_view.chunk.rerank_score|rerank_display }}</p>
+      <div class="sentences">
+        {% for sentence in chunk_view.sentences %}
+          {% if sentence.cited %}
+            <mark><span lang="{{ sentence.text|text_lang }}" dir="{{ sentence.text|text_dir }}">{{ sentence.text }}</span></mark>
+          {% else %}
+            <span lang="{{ sentence.text|text_lang }}" dir="{{ sentence.text|text_dir }}">{{ sentence.text }}</span>
+          {% endif %}
+        {% endfor %}
+      </div>
+    </section>
+  {% endfor %}
+
+  <h2>{{ t('review_model_heading') }}</h2>
+  {% if llm %}
+    <dl class="details">
+      <dt>{{ t('review_model_requested') }}</dt><dd>{{ llm.model_requested }}</dd>
+      <dt>{{ t('review_model_served') }}</dt><dd>{{ llm.model_served or '-' }}</dd>
+      <dt>{{ t('review_effort') }}</dt><dd>{{ llm.effort }}</dd>
+      <dt>{{ t('review_stop_reason') }}</dt><dd>{{ llm.stop_reason or '-' }}</dd>
+      <dt>{{ t('review_usage') }}</dt><dd>{{ llm.usage }}</dd>
+      <dt>{{ t('review_request_id') }}</dt><dd>{{ llm.request_id or '-' }}</dd>
+      <dt>{{ t('review_latency') }}</dt><dd>{{ item.latency_ms.total }}</dd>
+    </dl>
+  {% else %}
+    <p>-</p>
+  {% endif %}
+
+  <h2>{{ t('review_previous_heading') }}</h2>
+  {% if item.reviews %}
+    <ul class="reviews">
+      {% for review in item.reviews %}
+        <li>
+          <p class="meta">{{ review.reviewer_username }} &middot; {{ review.created_at }} &middot; {{ t('verdict_' ~ review.verdict) }}{% if review.citation_ok is not none %} &middot; {{ t('review_citation_ok') }}: {{ t('review_citation_yes') if review.citation_ok else t('review_citation_no') }}{% endif %}</p>
+          {% if review.notes %}
+            <div class="block" lang="{{ review.notes|text_lang }}" dir="{{ review.notes|text_dir }}">{{ review.notes }}</div>
+          {% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p>{{ t('review_no_previous') }}</p>
+  {% endif %}
+
+  <h2>{{ t('review_form_heading') }}</h2>
+  {% if show_form %}
+    <form method="post" action="/review/{{ item.id }}" class="stack review-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label for="verdict">{{ t('review_verdict') }}</label>
+      <select id="verdict" name="verdict" required>
+        {% for verdict in verdicts %}
+          <option value="{{ verdict }}">{{ t('verdict_' ~ verdict) }}</option>
+        {% endfor %}
+      </select>
+      {% if show_citation %}
+        <fieldset>
+          <legend>{{ t('review_citation_ok') }}</legend>
+          <label><input type="radio" name="citation_ok" value="true" required> {{ t('review_citation_yes') }}</label>
+          <label><input type="radio" name="citation_ok" value="false"> {{ t('review_citation_no') }}</label>
+        </fieldset>
+      {% endif %}
+      <label for="notes">{{ t('review_notes') }}</label>
+      <textarea id="notes" name="notes" rows="4" maxlength="4000"></textarea>
+      <button type="submit">{{ t('review_submit') }}</button>
+    </form>
+  {% else %}
+    <p>{{ t('review_no_form') }}</p>
+  {% endif %}
+{% endblock %}
