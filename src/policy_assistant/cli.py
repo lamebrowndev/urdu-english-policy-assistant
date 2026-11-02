@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import re
+import sys
 import time
 import uuid
 from contextlib import closing
@@ -19,6 +20,13 @@ import typer
 from policy_assistant.answering.model import build_answer_model
 from policy_assistant.answering.service import AnswerOutcome, AnswerResult
 from policy_assistant.answering.service import answer as run_answer
+from policy_assistant.auth.users import (
+    create_user,
+    list_users,
+    set_user_active,
+    set_user_groups,
+    set_user_role,
+)
 from policy_assistant.config import Settings, find_repo_root, get_settings
 from policy_assistant.db.connection import connect, utc_now
 from policy_assistant.db.migrate import applied_checksums, migrate, pending_migrations
@@ -63,10 +71,12 @@ db_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Database 
 corpus_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Corpus commands.")
 eval_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Evaluation commands.")
 audit_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Audit log commands.")
+user_app = typer.Typer(no_args_is_help=True, add_completion=False, help="User account commands.")
 app.add_typer(db_app, name="db")
 app.add_typer(corpus_app, name="corpus")
 app.add_typer(eval_app, name="eval")
 app.add_typer(audit_app, name="audit")
+app.add_typer(user_app, name="user")
 
 
 def _configure_logging() -> None:
@@ -886,6 +896,134 @@ def audit_show(
         "latency_ms": row[14],
     }
     typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def _read_password(password_stdin: bool) -> str:
+    if password_stdin:
+        return sys.stdin.read().rstrip("\r\n")
+    first = getpass.getpass("Password: ")
+    second = getpass.getpass("Password again: ")
+    if first != second:
+        typer.secho("passwords do not match", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    return first
+
+
+@user_app.command("add")
+def user_add(
+    username: Annotated[str, typer.Argument(help="Username.")],
+    display_name: Annotated[str, typer.Option("--display-name", help="Display name.")],
+    role: Annotated[str, typer.Option("--role", help="user, reviewer, or admin.")],
+    groups: Annotated[
+        list[str] | None, typer.Option("--group", help="Group id (repeatable).")
+    ] = None,
+    password_stdin: Annotated[
+        bool, typer.Option("--password-stdin", help="Read the password from stdin.")
+    ] = False,
+) -> None:
+    """Create a user account."""
+    _configure_logging()
+    password = _read_password(password_stdin)
+    settings = get_settings()
+    try:
+        with closing(connect(settings.database_url)) as conn:
+            user = create_user(
+                conn,
+                username,
+                display_name,
+                password,
+                role,
+                groups or [],
+            )
+    except (ValueError, psycopg.Error) as exc:
+        typer.secho(str(exc), err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"created user {user.username}")
+
+
+@user_app.command("set-groups")
+def user_set_groups(
+    username: Annotated[str, typer.Argument(help="Username.")],
+    groups: Annotated[
+        list[str] | None, typer.Option("--group", help="Group id (repeatable).")
+    ] = None,
+) -> None:
+    """Replace a user's group memberships (no groups means none)."""
+    _configure_logging()
+    settings = get_settings()
+    try:
+        with closing(connect(settings.database_url)) as conn:
+            set_user_groups(conn, username, groups or [])
+    except (ValueError, psycopg.Error) as exc:
+        typer.secho(str(exc), err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"updated groups for {username.strip().lower()}")
+
+
+@user_app.command("set-role")
+def user_set_role(
+    username: Annotated[str, typer.Argument(help="Username.")],
+    role: Annotated[str, typer.Argument(help="user, reviewer, or admin.")],
+) -> None:
+    """Change a user's role."""
+    _configure_logging()
+    settings = get_settings()
+    try:
+        with closing(connect(settings.database_url)) as conn:
+            set_user_role(conn, username, role)
+    except (ValueError, psycopg.Error) as exc:
+        typer.secho(str(exc), err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"updated role for {username.strip().lower()}")
+
+
+@user_app.command("disable")
+def user_disable(
+    username: Annotated[str, typer.Argument(help="Username.")],
+) -> None:
+    """Deactivate a user and delete their sessions."""
+    _configure_logging()
+    settings = get_settings()
+    try:
+        with closing(connect(settings.database_url)) as conn:
+            set_user_active(conn, username, False)
+    except (ValueError, psycopg.Error) as exc:
+        typer.secho(str(exc), err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"disabled {username.strip().lower()}")
+
+
+@user_app.command("enable")
+def user_enable(
+    username: Annotated[str, typer.Argument(help="Username.")],
+) -> None:
+    """Reactivate a user."""
+    _configure_logging()
+    settings = get_settings()
+    try:
+        with closing(connect(settings.database_url)) as conn:
+            set_user_active(conn, username, True)
+    except (ValueError, psycopg.Error) as exc:
+        typer.secho(str(exc), err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"enabled {username.strip().lower()}")
+
+
+@user_app.command("list")
+def user_list() -> None:
+    """List users, roles, active state, and groups."""
+    _configure_logging()
+    settings = get_settings()
+    try:
+        with closing(connect(settings.database_url)) as conn:
+            users = list_users(conn)
+    except psycopg.Error as exc:
+        typer.secho(f"database unavailable: {exc}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from exc
+    for user in users:
+        state = "active" if user.is_active else "disabled"
+        groups = ",".join(sorted(user.groups)) or "-"
+        typer.echo(f"{user.username}  {user.role}  {state}  {groups}")
 
 
 if __name__ == "__main__":
