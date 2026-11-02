@@ -51,3 +51,10 @@ def test_closing_quotes_stay_with_sentence() -> None:
 
 def test_empty_input() -> None:
     assert split_sentences("   ") == []
+
+
+def test_urdu_list_marker() -> None:
+    assert split_sentences("۱۔ ملازمین کو تحریری درخواست دینی ہوگی۔ دوسرا جملہ۔") == [
+        "۱۔ ملازمین کو تحریری درخواست دینی ہوگی۔",
+        "دوسرا جملہ۔",
+    ]
