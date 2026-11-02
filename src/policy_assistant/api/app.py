@@ -15,7 +15,7 @@ import psycopg
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from psycopg_pool import ConnectionPool
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from policy_assistant.answering.language import answer_language
 from policy_assistant.answering.model import build_answer_model
@@ -91,18 +91,18 @@ class _StrictModel(BaseModel):
 
 
 class LoginBody(_StrictModel):
-    username: str
-    password: str
+    username: str = Field(max_length=64)
+    password: str = Field(max_length=1024)
 
 
 class AskBody(_StrictModel):
-    question: str
+    question: str = Field(max_length=10000)
 
 
 class ReviewBody(_StrictModel):
-    verdict: str
+    verdict: str = Field(max_length=32)
     citation_ok: bool | None = None
-    notes: str = ""
+    notes: str = Field(default="", max_length=4000)
 
 
 def _pool(request: Request) -> ConnectionPool[Any]:
@@ -420,7 +420,7 @@ def create_app(
     @api.get("/healthz")
     def healthz(request: Request) -> Any:
         try:
-            with _pool(request).connection() as conn:
+            with _pool(request).connection(timeout=2) as conn:
                 conn.execute("SELECT 1").fetchone()
         except psycopg.Error:
             return JSONResponse(status_code=503, content={"status": "error"})

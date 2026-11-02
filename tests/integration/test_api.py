@@ -544,3 +544,84 @@ def test_prune_keeps_groups_with_user_members(
     _ingest_sample(reduced, sample_repo, settings_for, fake_counter, fake_embedder, prune=True)
     with connect(db_dsn) as conn:
         assert conn.execute("SELECT count(*) FROM groups WHERE id = 'hr'").fetchone()[0] == 1
+
+
+def test_history_applies_current_visibility(api_client: TestClient, db_dsn: str) -> None:
+    csrf = _login(api_client, "fatima")
+    answer = api_client.post(
+        "/api/ask",
+        json={"question": "What is the Finance Director's approval limit?"},
+        headers=_headers(csrf),
+    )
+    assert answer.status_code == 200
+    audit_id = answer.json()["audit_id"]
+    assert audit_id in {item["audit_id"] for item in api_client.get("/api/history").json()["items"]}
+    with connect(db_dsn) as conn:
+        set_user_groups(conn, "fatima", ["all_staff"])
+    assert audit_id not in {
+        item["audit_id"] for item in api_client.get("/api/history").json()["items"]
+    }
+    with connect(db_dsn) as conn:
+        set_user_groups(conn, "fatima", ["all_staff", "finance"])
+    assert audit_id in {item["audit_id"] for item in api_client.get("/api/history").json()["items"]}
+
+
+def test_fail_closed_visibility_for_malformed_retrieval(
+    api_client: TestClient, db_dsn: str
+) -> None:
+    with connect(db_dsn) as conn:
+        empty_id = conn.execute(
+            """
+            INSERT INTO answer_audit (
+                actor, principal_groups, question, question_language, outcome,
+                answer_text, retrieval, prompt_version, pipeline_fingerprint,
+                latency_ms
+            ) VALUES (
+                'user:test', ARRAY['all_staff'], 'empty retrieval', 'en', 'answered',
+                'text', '{}'::jsonb, 'answer-v1', 'fingerprint', '{}'::jsonb
+            ) RETURNING id
+            """
+        ).fetchone()[0]
+        missing_id = conn.execute(
+            """
+            INSERT INTO answer_audit (
+                actor, principal_groups, question, question_language, outcome,
+                answer_text, retrieval, prompt_version, pipeline_fingerprint,
+                latency_ms
+            ) VALUES (
+                'user:test', ARRAY['all_staff'], 'missing document', 'en', 'answered',
+                'text', '{"chunks":[{"chunk_id":1}]}'::jsonb, 'answer-v1',
+                'fingerprint', '{}'::jsonb
+            ) RETURNING id
+            """
+        ).fetchone()[0]
+    api_client.cookies.clear()
+    _login(api_client, "rehan")
+    queue_ids = {item["audit_id"] for item in api_client.get("/api/review/queue").json()["items"]}
+    assert str(empty_id) not in queue_ids
+    assert str(missing_id) not in queue_ids
+    for audit_id in (empty_id, missing_id):
+        assert api_client.get(f"/api/review/items/{audit_id}").status_code == 404
+
+    api_client.cookies.clear()
+    _login(api_client, "ayesha")
+    admin_ids = {item["audit_id"] for item in api_client.get("/api/review/queue").json()["items"]}
+    assert str(empty_id) in admin_ids
+    assert str(missing_id) in admin_ids
+    for audit_id in (empty_id, missing_id):
+        assert api_client.get(f"/api/review/items/{audit_id}").status_code == 200
+
+
+def test_request_model_length_limits(api_client: TestClient) -> None:
+    too_long_username = api_client.post(
+        "/api/auth/login",
+        json={"username": "a" * 65, "password": PASSWORD},
+    )
+    assert too_long_username.status_code == 422
+    csrf = _login(api_client, "alice")
+    too_long_question = api_client.post(
+        "/api/ask",
+        json={"question": "x" * 10001},
+        headers=_headers(csrf),
+    )
+    assert too_long_question.status_code == 422

@@ -51,12 +51,12 @@ is Secure by default, so disable that only for local curl:
 ```bash
 UPA_SESSION_COOKIE_SECURE=false uv run upa serve --port 8000
 
-curl -c cookies.txt -s -X POST http://127.0.0.1:8000/api/auth/login \
+curl -c "${TMPDIR:-/tmp}/upa-cookies.txt" -s -X POST http://127.0.0.1:8000/api/auth/login \
   -H 'Content-Type: application/json' \
   -d '{"username":"alice","password":"your-password"}'
 
 # Copy csrf_token from the login JSON, then:
-curl -b cookies.txt -s -X POST http://127.0.0.1:8000/api/ask \
+curl -b "${TMPDIR:-/tmp}/upa-cookies.txt" -s -X POST http://127.0.0.1:8000/api/ask \
   -H 'Content-Type: application/json' \
   -H "X-CSRF-Token: $CSRF" \
   -d '{"question":"How many days of annual leave do employees get?"}'

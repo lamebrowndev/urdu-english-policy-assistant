@@ -33,10 +33,9 @@ class ReviewConflict(RuntimeError):
 _ANSWER_VERDICTS = frozenset({"correct", "partially_correct", "incorrect"})
 _ABSTENTION_VERDICTS = frozenset({"correct_abstention", "missed_answer"})
 _VISIBILITY = (
-    "NOT EXISTS ("
+    "jsonb_typeof(a.retrieval->'chunks') = 'array' AND NOT EXISTS ("
     "SELECT 1 FROM jsonb_array_elements(a.retrieval->'chunks') c "
-    "WHERE NOT ((c->>'document_id') = ANY(%(allowed)s::text[]))"
-    ")"
+    "WHERE NOT COALESCE((c->>'document_id') = ANY(%(allowed)s::text[]), false))"
 )
 
 
@@ -230,11 +229,10 @@ def history(
     limit: int,
     cursor: tuple[datetime, uuid.UUID] | None,
 ) -> tuple[list[dict[str, Any]], tuple[datetime, uuid.UUID] | None]:
-    params: dict[str, Any] = {
-        "actor": f"user:{user.username}",
-        "limit": limit + 1,
-    }
-    clauses = ["a.actor = %(actor)s"]
+    visibility, params = _visibility(conn, user)
+    params["actor"] = f"user:{user.username}"
+    params["limit"] = limit + 1
+    clauses = ["a.actor = %(actor)s", visibility]
     cursor_clause = _cursor_clause(cursor, params)
     if cursor_clause is not None:
         clauses.append(cursor_clause)

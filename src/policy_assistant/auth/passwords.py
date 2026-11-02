@@ -6,7 +6,7 @@ import contextlib
 from functools import cache
 
 from argon2 import PasswordHasher
-from argon2.exceptions import InvalidHashError, VerifyMismatchError
+from argon2.exceptions import InvalidHashError, VerificationError
 
 HASHER = PasswordHasher()
 MIN_PASSWORD_LENGTH = 12
@@ -28,7 +28,7 @@ def hash_password(password: str) -> str:
 def verify_password(password_hash: str, password: str) -> bool:
     try:
         return bool(HASHER.verify(password_hash, password))
-    except (VerifyMismatchError, InvalidHashError):
+    except (VerificationError, InvalidHashError):
         return False
 
 
@@ -43,5 +43,5 @@ def _dummy_hash() -> str:
 
 def burn_verification(password: str) -> None:
     """Spend the same Argon2 work as a real verification for unknown users."""
-    with contextlib.suppress(VerifyMismatchError, InvalidHashError):
+    with contextlib.suppress(VerificationError, InvalidHashError):
         HASHER.verify(_dummy_hash(), password)
