@@ -10,7 +10,7 @@ def test_defaults_match_ticket() -> None:
     settings = Settings()
     assert settings.database_url.endswith("/upa")
     assert settings.tokenizer_repo == "BAAI/bge-m3"
-    assert settings.tokenizer_revision == "5617a9f61b028005a4858fdac845db406aefb181"
+    assert settings.tokenizer_revision == "9a0624b896d81da7492a910ffa53731274b6cf3d"
     assert settings.chunk_max_tokens == 350
     assert settings.quality_min_script_ratio == 0.60
     assert settings.log_level == "INFO"

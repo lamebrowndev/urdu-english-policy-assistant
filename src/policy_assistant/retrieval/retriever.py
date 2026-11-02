@@ -295,7 +295,7 @@ def retrieve(
         stage = time.perf_counter()
         scores = reranker.score(query, passages)
         timings["rerank"] = _elapsed_ms(stage)
-        rerank_scores = dict(zip(present_ids, scores, strict=False))
+        rerank_scores = dict(zip(present_ids, scores, strict=True))
         ordered_ids = sorted(
             present_ids,
             key=lambda chunk_id: (-rerank_scores.get(chunk_id, float("-inf")), chunk_id),

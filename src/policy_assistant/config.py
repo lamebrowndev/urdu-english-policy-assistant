@@ -39,10 +39,10 @@ class Settings(BaseSettings):
     manifest_path: Path = Path("corpus/manifest.yaml")
 
     tokenizer_repo: str = "BAAI/bge-m3"
-    tokenizer_revision: str = "5617a9f61b028005a4858fdac845db406aefb181"
+    tokenizer_revision: str = "9a0624b896d81da7492a910ffa53731274b6cf3d"
 
     embedding_repo: str = "BAAI/bge-m3"
-    embedding_revision: str = "5617a9f61b028005a4858fdac845db406aefb181"
+    embedding_revision: str = "9a0624b896d81da7492a910ffa53731274b6cf3d"
     reranker_repo: str = "BAAI/bge-reranker-v2-m3"
     reranker_revision: str = "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e"
     device: Literal["auto", "cpu", "mps", "cuda"] = "auto"
@@ -55,6 +55,14 @@ class Settings(BaseSettings):
     rerank_candidates: int = Field(default=30, gt=0)
     retrieve_top_k: int = Field(default=8, gt=0)
     hnsw_ef_search: int = Field(default=100, gt=0)
+
+    llm_model: str = "claude-opus-5-5"
+    llm_effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
+    llm_max_tokens: int = Field(default=16000, gt=0)
+    llm_timeout_seconds: float = Field(default=120.0, gt=0)
+    llm_fallbacks: Literal["default", "off"] = "default"
+    answer_mode: Literal["bm25", "dense", "hybrid", "hybrid_rerank"] = "hybrid_rerank"
+    abstain_min_rerank_score: float = 0.05
 
     chunk_max_tokens: int = Field(default=350, gt=0)
     chunk_overlap_tokens: int = Field(default=50, ge=0)

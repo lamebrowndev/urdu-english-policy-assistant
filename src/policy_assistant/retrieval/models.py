@@ -45,6 +45,7 @@ class SentenceTransformerEmbedder:
             settings.embedding_repo,
             revision=settings.embedding_revision,
             device=self.device,
+            model_kwargs={"use_safetensors": True},
         )
         self._model.max_seq_length = 512
 
@@ -76,6 +77,7 @@ class CrossEncoderReranker:
             revision=settings.reranker_revision,
             max_length=512,
             device=self.device,
+            model_kwargs={"use_safetensors": True},
         )
 
     def score(self, query: str, passages: list[str]) -> list[float]:
