@@ -34,6 +34,9 @@ jobs:
               names = set(wheel.namelist())
           required = {
               "policy_assistant/db/migrations/0001_init.sql",
+              "policy_assistant/db/migrations/0002_retrieval_index.sql",
+              "policy_assistant/text/stopwords/en.txt",
+              "policy_assistant/text/stopwords/ur.txt",
           }
           missing = required - names
           if missing:
