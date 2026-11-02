@@ -301,9 +301,11 @@ def answer(
     )
     if reraise is not None:
         raise reraise
-    sources: tuple[dict[str, Any], ...] = ()
-    if outcome == "answered" and answer_payload is not None:
-        sources = tuple(answer_payload.get("sources", []))
+    sources: tuple[dict[str, Any], ...] = (
+        tuple(answer_payload["sources"])
+        if outcome == "answered" and answer_payload is not None
+        else ()
+    )
     return AnswerResult(
         audit_id=audit_id,
         outcome=outcome,
