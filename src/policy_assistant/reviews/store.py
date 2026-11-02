@@ -62,11 +62,15 @@ def queue(
     outcome: str | None,
     limit: int,
     cursor: tuple[datetime, uuid.UUID] | None,
+    actor: str | None = None,
 ) -> tuple[list[dict[str, Any]], tuple[datetime, uuid.UUID] | None]:
     if status not in {"unreviewed", "reviewed", "all"}:
         raise ValueError(f"unknown queue status: {status}")
     visibility, params = _visibility(conn, viewer)
     clauses = [visibility]
+    if actor:
+        params["actor"] = actor
+        clauses.append("a.actor = %(actor)s")
     if outcome == "error":
         clauses.append("a.outcome = 'error'")
     else:
@@ -164,6 +168,24 @@ def item(
         }
         for row in rows
     ]
+    evaluation = conn.execute(
+        """
+        SELECT run_id, item_id, category, reference_answer
+        FROM eval_results
+        WHERE audit_id = %s
+        """,
+        (audit_id,),
+    ).fetchone()
+    payload["evaluation"] = (
+        {
+            "run_id": str(evaluation[0]),
+            "item_id": str(evaluation[1]),
+            "category": str(evaluation[2]),
+            "reference_answer": str(evaluation[3]),
+        }
+        if evaluation is not None
+        else None
+    )
     return payload
 
 

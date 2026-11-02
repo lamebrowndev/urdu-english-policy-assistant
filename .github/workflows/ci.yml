@@ -37,6 +37,7 @@ jobs:
               "policy_assistant/db/migrations/0002_retrieval_index.sql",
               "policy_assistant/db/migrations/0003_answer_audit.sql",
               "policy_assistant/db/migrations/0004_accounts_reviews.sql",
+              "policy_assistant/db/migrations/0005_answer_evaluation.sql",
               "policy_assistant/text/stopwords/en.txt",
               "policy_assistant/text/stopwords/ur.txt",
               "policy_assistant/web/templates/base.html",
@@ -47,8 +48,8 @@ jobs:
           }
           missing = required - names
           if missing:
-              raise SystemExit(f"Wheel is missing packaged migrations: {sorted(missing)}")
-          print("Wheel contains policy_assistant/db/migrations/0001_init.sql")
+              raise SystemExit(f"Wheel is missing package data: {sorted(missing)}")
+          print(f"Wheel contains all {len(required)} required data files")
           PY
 
   integration:

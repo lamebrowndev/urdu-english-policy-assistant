@@ -15,6 +15,8 @@
         <option value="{{ outcome }}" {% if selected_outcome == outcome %}selected{% endif %}>{{ t('outcome_' ~ outcome) }}</option>
       {% endfor %}
     </select>
+    <label for="actor">{{ t('review_filter_actor') }}</label>
+    <input id="actor" name="actor" type="text" maxlength="128" dir="ltr" value="{{ selected_actor }}" placeholder="eval:… / user:…">
     <button type="submit">{{ t('review_apply') }}</button>
   </form>
   {% if items %}

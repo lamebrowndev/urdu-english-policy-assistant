@@ -61,7 +61,9 @@ def test_answer_audit_is_append_only(db_dsn: str) -> None:
         with pytest.raises(psycopg.Error, match="append-only"):
             conn.execute("DELETE FROM answer_audit")
         with pytest.raises(psycopg.Error, match="append-only"):
-            conn.execute("TRUNCATE answer_reviews, answer_audit")
+            # Every table referencing answer_audit must be named, or Postgres's
+            # foreign-key check fires before the append-only trigger.
+            conn.execute("TRUNCATE answer_reviews, eval_results, answer_audit")
 
 
 def test_answer_reviews_is_append_only(db_dsn: str) -> None:

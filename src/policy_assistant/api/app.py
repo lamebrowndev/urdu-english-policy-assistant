@@ -309,6 +309,7 @@ def create_app(
         outcome: str | None = None,
         limit: Annotated[int, Query(ge=1, le=100)] = 20,
         cursor: str | None = None,
+        actor: Annotated[str | None, Query(max_length=128)] = None,
     ) -> dict[str, Any]:
         decoded = _decode_cursor(cursor)
         try:
@@ -320,6 +321,7 @@ def create_app(
                     outcome=outcome,
                     limit=limit,
                     cursor=decoded,
+                    actor=actor,
                 )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc

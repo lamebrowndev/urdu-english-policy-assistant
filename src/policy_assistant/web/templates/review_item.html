@@ -15,6 +15,12 @@
     <p class="meta">{{ t('review_flags') }}: {{ flags|join(', ') }}</p>
   {% endif %}
 
+  {% if item.evaluation %}
+    <h2>{{ t('review_eval_heading') }}</h2>
+    <p class="meta">{{ t('review_eval_category') }}: {{ t('category_' ~ item.evaluation.category) }} &middot; <bdi dir="ltr">{{ item.evaluation.item_id }}</bdi></p>
+    <div class="block cited" lang="{{ item.evaluation.reference_answer|text_lang }}" dir="{{ item.evaluation.reference_answer|text_dir }}">{{ item.evaluation.reference_answer }}</div>
+  {% endif %}
+
   {% if sources %}
     <h2>{{ t('review_sources_heading') }}</h2>
     <ol class="sources">

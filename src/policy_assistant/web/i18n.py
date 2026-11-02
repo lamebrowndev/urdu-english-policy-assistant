@@ -70,6 +70,12 @@ STRINGS: dict[str, dict[str, str]] = {
         "review_submit": "Save review",
         "review_not_reviewable": "This outcome is not reviewable.",
         "review_no_form": "Error rows cannot be reviewed.",
+        "review_filter_actor": "Asked by",
+        "review_eval_heading": "Evaluation reference",
+        "review_eval_category": "Category",
+        "category_answerable": "Answerable",
+        "category_unanswerable": "Not covered by the policies",
+        "category_restricted": "Restricted: the asker may not read the source",
         "review_invalid": (
             "This review could not be saved. Choose a verdict that fits this answer, "
             "and for answered questions say whether the citations are correct."
@@ -179,6 +185,12 @@ STRINGS: dict[str, dict[str, str]] = {
         "review_submit": "جائزہ محفوظ کریں",
         "review_not_reviewable": "یہ نتیجہ قابلِ جائزہ نہیں ہے۔",
         "review_no_form": "خرابی کے نتیجے کا جائزہ نہیں لیا جا سکتا۔",
+        "review_filter_actor": "سوال کرنے والا",
+        "review_eval_heading": "جانچ کا حوالہ",
+        "review_eval_category": "زمرہ",
+        "category_answerable": "قابلِ جواب",
+        "category_unanswerable": "پالیسیوں میں شامل نہیں",
+        "category_restricted": "محدود: سوال کرنے والا ماخذ نہیں پڑھ سکتا",
         "review_invalid": (
             "یہ جائزہ محفوظ نہیں ہو سکا۔ اس جواب کے مطابق فیصلہ منتخب کریں، اور جواب والے "
             "سوالات کے لیے بتائیں کہ حوالہ جات درست ہیں یا نہیں۔"

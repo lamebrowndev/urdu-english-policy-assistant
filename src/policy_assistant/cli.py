@@ -10,6 +10,7 @@ import re
 import sys
 import time
 import uuid
+from collections import Counter
 from contextlib import closing
 from pathlib import Path
 from typing import Annotated, Any, cast, get_args
@@ -31,6 +32,19 @@ from policy_assistant.auth.users import (
 from policy_assistant.config import Settings, find_repo_root, get_settings
 from policy_assistant.db.connection import connect, utc_now
 from policy_assistant.db.migrate import applied_checksums, migrate, pending_migrations
+from policy_assistant.evaluation.dataset import (
+    SPLITS,
+    AnswerItem,
+    DatasetError,
+    Split,
+    file_sha256,
+    load_answer_dataset,
+    verify_evidence,
+    verify_frozen,
+)
+from policy_assistant.evaluation.dataset import freeze as freeze_dataset
+from policy_assistant.evaluation.runner import run_items, start_run
+from policy_assistant.evaluation.scoring import ScoringError, score_run
 from policy_assistant.ingest.extract import ExtractionError, extract_pages
 from policy_assistant.ingest.fetch import fetch_documents, sha256_file
 from policy_assistant.ingest.manifest import DocumentSpec, Manifest, ManifestError
@@ -710,6 +724,166 @@ def eval_retrieval(
     _print_eval_table(report)
     report_path = _write_exclusive_report("retrieval-eval", report)
     typer.echo(f"report: {report_path}")
+
+
+def _eval_fail(message: str) -> typer.Exit:
+    typer.secho(message, err=True, fg=typer.colors.RED)
+    return typer.Exit(code=1)
+
+
+@eval_app.command("freeze")
+def eval_freeze(
+    dataset: Annotated[Path, typer.Option("--dataset", help="Answer dataset (JSONL).")],
+) -> None:
+    """Record a dataset's SHA-256 so it cannot change unnoticed (required for test)."""
+    _configure_logging()
+    try:
+        digest = freeze_dataset(dataset)
+    except DatasetError as exc:
+        raise _eval_fail(f"freeze failed: {exc}") from exc
+    typer.echo(f"frozen {dataset} sha256={digest}")
+
+
+@eval_app.command("answers")
+def eval_answers(
+    dataset: Annotated[Path, typer.Option("--dataset", help="Answer dataset (JSONL).")],
+    split: Annotated[str, typer.Option("--split", help="sample, dev, or test.")],
+    limit: Annotated[
+        int | None, typer.Option("--limit", help="Only the first N items (not for test).")
+    ] = None,
+    yes: Annotated[bool, typer.Option("--yes", help="Skip the paid-API confirmation.")] = False,
+) -> None:
+    """Answer every dataset question through the full pipeline, for human review."""
+    _configure_logging()
+    if split not in SPLITS:
+        raise _eval_fail(f"--split must be one of {list(SPLITS)}")
+    if limit is not None and (limit < 1 or split == "test"):
+        raise _eval_fail("--limit must be at least 1 and is not allowed for the test split")
+    settings = get_settings()
+    try:
+        items = load_answer_dataset(dataset)
+        digest = verify_frozen(dataset) if split == "test" else file_sha256(dataset)
+        if limit is not None:
+            items = items[:limit]
+        with closing(connect(settings.database_url)) as conn:
+            pending = pending_migrations(conn)
+            if pending:
+                raise _eval_fail("pending migrations: run upa db migrate")
+            problem = index_problem(conn, settings)
+            if problem is not None:
+                raise _eval_fail(problem)
+            verify_evidence(conn, items)
+            conn.commit()
+            if not yes:
+                typer.confirm(
+                    f"Ask {len(items)} questions through {settings.llm_model} "
+                    f"(effort {settings.llm_effort})? Each is one paid API call.",
+                    abort=True,
+                )
+            embedder = SentenceTransformerEmbedder(settings)
+            reranker = CrossEncoderReranker(settings)
+            model = build_answer_model(settings)
+            run_id = start_run(
+                conn,
+                actor=f"cli:{getpass.getuser()}",
+                dataset_name=dataset.name,
+                dataset_sha256=digest,
+                split=cast(Split, split),
+                item_count=len(items),
+                settings=settings,
+            )
+            typer.echo(f"run: {run_id}")
+
+            def progress(index: int, item: AnswerItem, result: AnswerResult) -> None:
+                typer.echo(f"[{index}/{len(items)}] {item.id}  {item.category}  {result.outcome}")
+
+            try:
+                results = run_items(
+                    conn,
+                    run_id,
+                    items,
+                    embedder=embedder,
+                    reranker=reranker,
+                    model=model,
+                    settings=settings,
+                    on_result=progress,
+                )
+            except Exception as exc:
+                raise _eval_fail(
+                    f"run {run_id} stopped: {exc}. The failure is in the audit log; "
+                    "fix it and start a new run."
+                ) from exc
+    except (DatasetError, psycopg.Error) as exc:
+        raise _eval_fail(f"evaluation failed: {exc}") from exc
+    counts = Counter(result.outcome for result in results)
+    typer.echo("outcomes: " + ", ".join(f"{key}={value}" for key, value in sorted(counts.items())))
+    typer.echo(f"review: /review?status=all&actor=eval:{run_id}")
+    typer.echo(f"score:  upa eval score {run_id}")
+
+
+def _percent(value: float | None) -> str:
+    return "-" if value is None else f"{value * 100:.1f}%"
+
+
+def _score_row(label: str, bucket: dict[str, Any]) -> str:
+    interval = bucket["ci95"]
+    ci = "-" if interval is None else f"{interval[0] * 100:.1f}-{interval[1] * 100:.1f}%"
+    return (
+        f"{label:<24}{bucket['items']:>6}{bucket['scored']:>8}{bucket['correct']:>9}"
+        f"{_percent(bucket['accuracy']):>10}  {ci:<14}{bucket['partially_correct']:>8}"
+        f"{bucket['errors']:>8}"
+    )
+
+
+@eval_app.command("score")
+def eval_score(
+    run_id: Annotated[str, typer.Argument(help="Evaluation run id.")],
+    json_output: Annotated[bool, typer.Option("--json", help="Print JSON.")] = False,
+) -> None:
+    """Score a run from the latest human review of each answer."""
+    _configure_logging()
+    try:
+        run_uuid = uuid.UUID(run_id)
+    except ValueError as exc:
+        raise _eval_fail(f"invalid run id: {run_id}") from exc
+    settings = get_settings()
+    try:
+        with closing(connect(settings.database_url)) as conn:
+            report = score_run(conn, run_uuid)
+    except (ScoringError, psycopg.Error) as exc:
+        raise _eval_fail(f"scoring failed: {exc}") from exc
+    if json_output:
+        typer.echo(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+        return
+    run = report["run"]
+    typer.echo(
+        f"run {run['id']}  split={run['split']}  dataset={run['dataset_name']} "
+        f"sha256={run['dataset_sha256'][:12]}…  items={run['item_count']}"
+    )
+    pending = len(report["pending_review"])
+    if report["complete"]:
+        typer.echo("status: COMPLETE (every item scored)")
+    else:
+        typer.echo(
+            f"status: PRELIMINARY ({pending} awaiting review, "
+            f"{report['missing_items']} missing results)"
+        )
+    typer.echo(
+        f"{'':<24}{'items':>6}{'scored':>8}{'correct':>9}{'accuracy':>10}  "
+        f"{'95% CI':<14}{'partial':>8}{'errors':>8}"
+    )
+    typer.echo(_score_row("overall", report["overall"]))
+    for language, bucket in report["by_language"].items():
+        typer.echo(_score_row(f"language {language}", bucket))
+    for category, bucket in report["by_category"].items():
+        typer.echo(_score_row(f"category {category}", bucket))
+    for tag, bucket in report["by_tag"].items():
+        typer.echo(_score_row(f"tag {tag}", bucket))
+    citations = report["citations"]
+    typer.echo(
+        f"citations: {citations['citation_ok']} of {citations['reviewed_answers']} "
+        "reviewed answers had correct citations"
+    )
 
 
 def _print_answer(result: AnswerResult) -> None:

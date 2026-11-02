@@ -6,10 +6,10 @@ import hmac
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 from urllib.parse import quote, urlsplit
 
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, Form, Query, Request
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -176,12 +176,15 @@ def _review_older_url(
     status: str,
     outcome: str | None,
     cursor: tuple[datetime, uuid.UUID] | None,
+    actor: str | None = None,
 ) -> str | None:
     if cursor is None:
         return None
     params = [f"status={quote(status, safe='')}"]
     if outcome:
         params.append(f"outcome={quote(outcome, safe='')}")
+    if actor:
+        params.append(f"actor={quote(actor, safe='')}")
     params.append(f"cursor={quote(_encode_cursor(cursor), safe='')}")
     return "/review?" + "&".join(params)
 
@@ -391,6 +394,7 @@ def review_queue_page(
     status: str = "unreviewed",
     outcome: str | None = None,
     cursor: str | None = None,
+    actor: Annotated[str | None, Query(max_length=128)] = None,
 ) -> Any:
     user = session_user(request)
     if user is None:
@@ -407,6 +411,7 @@ def review_queue_page(
                 outcome=outcome,
                 limit=20,
                 cursor=decoded,
+                actor=actor,
             )
     except ValueError:
         return _error_page(request, user, 422, "invalid_request")
@@ -417,9 +422,10 @@ def review_queue_page(
         "review_queue.html",
         status_code=200,
         items=items,
-        older_url=_review_older_url(status, outcome, next_cursor),
+        older_url=_review_older_url(status, outcome, next_cursor, actor),
         selected_status=status,
         selected_outcome=outcome,
+        selected_actor=actor or "",
         outcomes=OUTCOMES,
         page_title=translate(lang, "page_review_title"),
     )
