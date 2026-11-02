@@ -43,3 +43,18 @@ the cost/quality lever, and thinking stays at its model default.
   sent, not against free text.
 - A prompt change requires bumping `PROMPT_VERSION` and re-reviewing the
   evaluation set.
+
+## Server-side refusal fallback
+
+Requests opt in with `fallbacks="default"` under the beta
+`server-side-fallback-2026-07-01`, so a policy decline is retried server-side
+on the model's default fallback. `llm.model_served` records which model
+actually answered. `UPA_LLM_FALLBACKS=off` disables the beta opt-in and the
+fallback field.
+
+## Prompt contract
+
+The `build_documents()` layout is part of the prompt contract: one
+custom-content document per chunk, in rank order, with one block per sentence.
+Changing that layout changes what the model sees and requires bumping
+`PROMPT_VERSION`.
