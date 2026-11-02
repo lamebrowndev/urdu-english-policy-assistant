@@ -221,6 +221,8 @@ def answer(
             raise
 
         documents = build_documents(retrieval.chunks)
+        if not conn.autocommit:
+            conn.commit()
         llm_started = time.perf_counter()
         try:
             reply = model.generate(system_prompt(language), documents, question)
