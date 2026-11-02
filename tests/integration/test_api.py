@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from collections.abc import Callable, Iterator
@@ -37,8 +38,8 @@ def _ingest_sample(
     embedder: HashingEmbedder,
     *,
     prune: bool = False,
-) -> None:
-    ingest(
+) -> Any:
+    return ingest(
         manifest,
         repo_root=root,
         only_ids=None,
@@ -113,20 +114,7 @@ def _ask(client: TestClient, csrf: str, question: str) -> Any:
     return client.post("/api/ask", json={"question": question}, headers=_headers(csrf))
 
 
-def _audit_ids(client: TestClient, username: str) -> list[str]:
-    return [
-        str(row[0])
-        for row in client.app.state.pool.connection()
-        .__enter__()
-        .execute(
-            "SELECT id FROM answer_audit WHERE actor = %s ORDER BY created_at",
-            (f"user:{username}",),
-        )
-        .fetchall()
-    ]
-
-
-def test_login_cookie_and_distinct_sessions(api_client: TestClient) -> None:
+def test_login_cookie_and_distinct_sessions(api_client: TestClient, db_dsn: str) -> None:
     first = api_client.post("/api/auth/login", json={"username": "alice", "password": PASSWORD})
     assert first.status_code == 200
     cookie = first.headers["set-cookie"]
@@ -136,6 +124,13 @@ def test_login_cookie_and_distinct_sessions(api_client: TestClient) -> None:
     assert "Path=/" in cookie
     assert "Max-Age=28800" in cookie
     first_token = api_client.cookies.get("upa_session")
+    with connect(db_dsn) as conn:
+        stored = conn.execute(
+            "SELECT token_hash FROM sessions WHERE user_id = "
+            "(SELECT id FROM users WHERE username = 'alice') "
+            "ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()[0]
+    assert stored == hashlib.sha256((first_token or "").encode()).digest()
     second = api_client.post("/api/auth/login", json={"username": "alice", "password": PASSWORD})
     assert second.status_code == 200
     assert api_client.cookies.get("upa_session") != first_token
@@ -420,8 +415,14 @@ def test_review_visibility_validation_and_queue(api_client: TestClient, db_dsn: 
     assert matching[0]["latest_verdict"] == "correct"
 
     api_client.cookies.clear()
-    _login(api_client, "ayesha")
+    ayesha_csrf = _login(api_client, "ayesha")
     assert api_client.get(f"/api/review/items/{audit_id}").status_code == 200
+    admin_review = api_client.post(
+        f"/api/review/items/{audit_id}/reviews",
+        json={"verdict": "partially_correct", "citation_ok": True},
+        headers=_headers(ayesha_csrf),
+    )
+    assert admin_review.status_code == 201
 
     abstain_csrf = _login(api_client, "fatima")
     api_client.app.state.answer_model = ScriptedAnswerModel(_reply("NO_ANSWER", False))

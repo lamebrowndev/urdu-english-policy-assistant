@@ -2,14 +2,14 @@
 
 A bilingual Urdu/English policy assistant whose answers must cite exact source
 sentences, use only documents the asking user may see, and log every answer for
-human review. Phase 1 built ingestion, Phase 2 added hybrid retrieval, and
-Phase 3 adds cited answers with an append-only audit log. Later phases add the
-authenticated HTTP API, web UI, evaluation, and showcase.
+human review. Phases 1–3 built ingestion, hybrid retrieval, cited answers, and
+an append-only audit log. Phase 4A adds accounts, server-side sessions, an
+authenticated HTTP API, and a reviewer workflow. Phase 4B adds the web UI.
 
 ## Status
 
-Phase 3 of 6 complete: cited answers and audit log. No answer-accuracy numbers
-appear here yet, because none have been measured on the real corpus. The seed
+Phases 1–3 and 4A complete; next: 4B web UI. No answer-accuracy numbers appear
+here yet, because none have been measured on the real corpus. The seed
 retrieval dataset is a pipeline check, not a performance result.
 
 The sample corpus is fictional. The project does not redistribute third-party
@@ -26,13 +26,13 @@ make db-up
 uv run upa db migrate
 uv run upa ingest --manifest corpus/manifest.sample.yaml
 uv run upa stats
-uv run upa retrieve "How many days of annual leave do employees get?" --group all_staff
 
 export ANTHROPIC_API_KEY=...        # or use: ant auth login
-uv run upa ask "How many days of annual leave do employees get?" --group all_staff
+uv run upa user add alice --display-name Alice --role user --group all_staff --password-stdin
+uv run upa serve --host 127.0.0.1 --port 8000
 ```
 
-The first `ingest` or `ask` downloads bge-m3 and bge-reranker-v2-m3: about
+The first `ingest` or API ask downloads bge-m3 and bge-reranker-v2-m3: about
 4.6 GB in total. Model files stay in the Hugging Face cache. Once cached,
 `export HF_HUB_OFFLINE=1` keeps loads fully local. The Claude API key is read by
 the Anthropic SDK from `ANTHROPIC_API_KEY` or an `ant auth login` profile; it is
@@ -42,6 +42,29 @@ never written to this repository, logs, or audit rows.
 the corpus without touching the database. `upa eval retrieval --dataset
 evals/retrieval_seed.sample.jsonl` runs the four retrieval modes over the seed
 questions.
+
+## HTTP API session
+
+With the server running, a local plain-http session looks like this. The cookie
+is Secure by default, so disable that only for local curl:
+
+```bash
+UPA_SESSION_COOKIE_SECURE=false uv run upa serve --port 8000
+
+curl -c cookies.txt -s -X POST http://127.0.0.1:8000/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"alice","password":"your-password"}'
+
+# Copy csrf_token from the login JSON, then:
+curl -b cookies.txt -s -X POST http://127.0.0.1:8000/api/ask \
+  -H 'Content-Type: application/json' \
+  -H "X-CSRF-Token: $CSRF" \
+  -d '{"question":"How many days of annual leave do employees get?"}'
+```
+
+Unauthenticated responses are 401. Unsafe methods without the CSRF header are
+403. The client never supplies groups, roles, or user ids; the server reads them
+from the session on every request.
 
 ## What Phase 1 does
 
@@ -80,17 +103,32 @@ questions.
 4. Identical user-facing abstention text for missing and restricted topics.
 5. `upa ask`, `upa audit list`, and `upa audit show`.
 
+## What Phase 4A adds
+
+1. Migration `0004_accounts_reviews.sql`: users, user groups, server-side
+   sessions, and append-only answer reviews.
+2. Argon2id passwords, SHA-256-hashed session tokens, HttpOnly/Secure/
+   SameSite=Strict cookies, and CSRF tokens for unsafe methods.
+3. An authenticated FastAPI with login, ask, history, reviewer queue, item, and
+   review endpoints; group and role changes apply to live sessions immediately.
+4. `upa user` for bootstrap and admin operations, and `upa serve` for uvicorn.
+5. ACL-filtered review queues where hidden and missing rows are both 404, and
+   error rows are available only with `outcome=error`.
+
 ## Layout
 
 ```
 src/policy_assistant/
   config.py               settings (UPA_ prefix, .env)
-  cli.py                  upa db | corpus | ingest | stats | retrieve | eval | ask | audit
-  db/                     connection, migrations 0001/0002/0003
+  cli.py                  upa db | corpus | ingest | stats | retrieve | eval | ask | audit | user | serve
+  db/                     connection, migrations 0001–0004
   text/                   normalize, language, sentences, terms, stopwords
   ingest/                 manifest, fetch, extract, quality, tokens, chunker, pipeline
-  retrieval/              access, bm25, dense, fusion, retriever, models, evaluation
-  answering/              model client, prompts, documents, citations, service
+  retrieval/              access, bm25, dense, fusion, retriever, models, readiness, evaluation
+  answering/              model client, prompts, documents, citations, service, audit store
+  auth/                   passwords, users, sessions
+  reviews/                review queue, review writes, history
+  api/                    FastAPI app and dependencies
 corpus/                   manifest.yaml, sample manifest, fictional samples
 evals/                    retrieval seed dataset
 tests/                    text, ingest, retrieval, answering, integration
@@ -98,10 +136,11 @@ docs/                     ROADMAP.md, ADRs
 docker/initdb/            test-database bootstrap
 ```
 
-Read [docs/ROADMAP.md](docs/ROADMAP.md) for all six phases. Architecture
-decisions live in [docs/adr](docs/adr): single Postgres + pgvector, Urdu
-normalization, the extraction quality gate, default-deny ACLs, BM25 in SQL,
-hybrid retrieval, cited answers, and the append-only audit log.
+Read [docs/ROADMAP.md](docs/ROADMAP.md) for all phases. Architecture decisions
+live in [docs/adr](docs/adr): single Postgres + pgvector, Urdu normalization,
+the extraction quality gate, default-deny ACLs, BM25 in SQL, hybrid retrieval,
+cited answers, the append-only audit log, accounts and sessions, and the review
+workflow.
 
 ## Development
 
@@ -116,7 +155,7 @@ Claude API. Opt-in tests:
 
 ```bash
 UPA_MODEL_TESTS=1 uv run pytest -k real_model
-UPA_LLM_TESTS=1 uv run pytest -k live_llm   # also needs ANTHROPIC_API_KEY
+UPA_LLM_TESTS=1 uv run pytest -k live_llm   # needs real Claude credentials
 ```
 
 Integration tests refuse a database whose name does not end in `_test`, and fail
