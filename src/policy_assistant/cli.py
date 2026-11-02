@@ -18,11 +18,19 @@ from policy_assistant.db.migrate import applied_checksums, migrate, pending_migr
 from policy_assistant.ingest.extract import ExtractionError, extract_pages
 from policy_assistant.ingest.fetch import fetch_documents
 from policy_assistant.ingest.manifest import DocumentSpec, Manifest, ManifestError
+from policy_assistant.ingest.pipeline import (
+    IngestError,
+    IngestReport,
+)
+from policy_assistant.ingest.pipeline import (
+    ingest as run_ingest,
+)
 from policy_assistant.ingest.quality import (
     DocumentAssessment,
     QualityThresholds,
     assess_document,
 )
+from policy_assistant.ingest.tokens import load_bge_m3_counter
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, help="Urdu/English policy assistant.")
 db_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Database commands.")
@@ -310,6 +318,111 @@ def corpus_inspect(
         raise typer.Exit(code=1)
     if quarantined:
         raise typer.Exit(code=2)
+
+
+def _print_ingest_report(report: IngestReport) -> None:
+    width = max((len(result.document_id) for result in report.results), default=10)
+    typer.echo(f"{'document'.ljust(width)}  status")
+    for result in report.results:
+        suffix = f"  {result.message}" if result.message and result.status == "error" else ""
+        typer.echo(f"{result.document_id.ljust(width)}  {result.status}{suffix}")
+    if report.stale_documents:
+        typer.echo(f"stale documents: {', '.join(report.stale_documents)}")
+    if report.stale_groups:
+        typer.echo(f"stale groups: {', '.join(report.stale_groups)}")
+    typer.echo(f"report: {report.report_path}")
+
+
+@app.command("ingest")
+def ingest_command(
+    manifest_option: Annotated[
+        Path | None, typer.Option("--manifest", help="Manifest path.")
+    ] = None,
+    document_ids: Annotated[
+        list[str] | None, typer.Option("--doc", help="Document id (repeatable).")
+    ] = None,
+    force: Annotated[bool, typer.Option("--force", help="Re-ingest unchanged documents.")] = False,
+    prune: Annotated[
+        bool, typer.Option("--prune", help="Delete documents and groups absent from the manifest.")
+    ] = False,
+) -> None:
+    """Extract, quality-gate, chunk, and store selected documents."""
+    _configure_logging()
+    try:
+        manifest, _, settings = _load_manifest(manifest_option)
+        count_tokens = load_bge_m3_counter(settings.tokenizer_repo, settings.tokenizer_revision)
+        report = run_ingest(
+            manifest,
+            repo_root=find_repo_root(),
+            only_ids=document_ids,
+            force=force,
+            prune=prune,
+            count_tokens=count_tokens,
+            settings=settings,
+        )
+    except (ManifestError, IngestError, psycopg.Error) as exc:
+        typer.secho(f"ingest failed: {exc}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from exc
+
+    _print_ingest_report(report)
+    if report.errors:
+        raise typer.Exit(code=1)
+    if report.quarantined:
+        raise typer.Exit(code=2)
+
+
+@app.command("stats")
+def stats_command() -> None:
+    """Print corpus counts and chunk token percentiles."""
+    _configure_logging()
+    settings = get_settings()
+    try:
+        with closing(connect(settings.database_url)) as conn:
+            documents_by_language = conn.execute(
+                "SELECT language, count(*) FROM documents GROUP BY language ORDER BY language"
+            ).fetchall()
+            pages_by_inclusion = conn.execute(
+                "SELECT included, count(*) FROM pages GROUP BY included ORDER BY included"
+            ).fetchall()
+            chunks_by_language = conn.execute(
+                "SELECT language, count(*) FROM chunks GROUP BY language ORDER BY language"
+            ).fetchall()
+            token_row = conn.execute(
+                """
+                SELECT
+                    percentile_cont(0.5) WITHIN GROUP (ORDER BY token_count),
+                    percentile_cont(0.95) WITHIN GROUP (ORDER BY token_count),
+                    max(token_count)
+                FROM chunks
+                """
+            ).fetchone()
+            zero_chunk_documents = conn.execute(
+                """
+                SELECT count(*) FROM documents d
+                WHERE NOT EXISTS (SELECT 1 FROM chunks c WHERE c.document_id = d.id)
+                """
+            ).fetchone()
+    except psycopg.Error as exc:
+        typer.secho(f"database unavailable: {exc}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo("documents per language:")
+    for language, count in documents_by_language:
+        typer.echo(f"  {language}: {count}")
+    typer.echo("pages included/excluded:")
+    for included, count in pages_by_inclusion:
+        typer.echo(f"  {'included' if included else 'excluded'}: {count}")
+    typer.echo("chunks per language:")
+    for language, count in chunks_by_language:
+        typer.echo(f"  {language}: {count}")
+    if token_row is not None and token_row[0] is not None:
+        p50, p95, maximum = token_row
+        typer.echo(f"chunk token_count p50/p95/max: {p50:.1f}/{p95:.1f}/{maximum}")
+    else:
+        typer.echo("chunk token_count p50/p95/max: no chunks")
+    typer.echo(
+        f"documents with zero chunks: {zero_chunk_documents[0] if zero_chunk_documents else 0}"
+    )
 
 
 if __name__ == "__main__":
