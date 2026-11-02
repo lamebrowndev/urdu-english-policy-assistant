@@ -20,7 +20,7 @@
     <ol class="sources">
       {% for source in sources %}
         <li>
-          <p class="meta">{{ source.document_title }} &middot; {{ source.page_start|page_label(source.page_end) }}{% if source.section_heading %} &middot; {{ source.section_heading }}{% endif %}</p>
+          <p class="meta"><bdi lang="{{ source.document_title|text_lang }}">{{ source.document_title }}</bdi> &middot; {{ source.page_start|page_label(source.page_end) }}{% if source.section_heading %} &middot; <bdi lang="{{ source.section_heading|text_lang }}">{{ source.section_heading }}</bdi>{% endif %}</p>
           <div class="block cited" lang="{{ source.cited_text|text_lang }}" dir="{{ source.cited_text|text_dir }}">{{ source.cited_text }}</div>
         </li>
       {% endfor %}
@@ -30,7 +30,7 @@
   <h2>{{ t('review_context_heading') }}</h2>
   {% for chunk_view in chunks %}
     <section class="context-chunk">
-      <h3>{{ chunk_view.chunk.document_title }} &middot; {{ chunk_view.chunk.page_start|page_label(chunk_view.chunk.page_end) }}{% if chunk_view.chunk.section_heading %} &middot; {{ chunk_view.chunk.section_heading }}{% endif %}</h3>
+      <h3><bdi lang="{{ chunk_view.chunk.document_title|text_lang }}">{{ chunk_view.chunk.document_title }}</bdi> &middot; {{ chunk_view.chunk.page_start|page_label(chunk_view.chunk.page_end) }}{% if chunk_view.chunk.section_heading %} &middot; <bdi lang="{{ chunk_view.chunk.section_heading|text_lang }}">{{ chunk_view.chunk.section_heading }}</bdi>{% endif %}</h3>
       <p class="meta">{{ t('review_rerank') }}: {{ chunk_view.chunk.rerank_score|rerank_display }}</p>
       <div class="sentences">
         {% for sentence in chunk_view.sentences %}
@@ -51,9 +51,9 @@
       <dt>{{ t('review_model_served') }}</dt><dd>{{ llm.model_served or '-' }}</dd>
       <dt>{{ t('review_effort') }}</dt><dd>{{ llm.effort }}</dd>
       <dt>{{ t('review_stop_reason') }}</dt><dd>{{ llm.stop_reason or '-' }}</dd>
-      <dt>{{ t('review_usage') }}</dt><dd>{{ llm.usage }}</dd>
-      <dt>{{ t('review_request_id') }}</dt><dd>{{ llm.request_id or '-' }}</dd>
-      <dt>{{ t('review_latency') }}</dt><dd>{{ item.latency_ms.total }}</dd>
+      <dt>{{ t('review_usage') }}</dt><dd dir="ltr">{{ llm.usage|usage_display }}</dd>
+      <dt>{{ t('review_request_id') }}</dt><dd dir="ltr">{{ llm.request_id or '-' }}</dd>
+      <dt>{{ t('review_latency') }}</dt><dd dir="ltr">{{ item.latency_ms.total|latency_display }}</dd>
     </dl>
   {% else %}
     <p>-</p>

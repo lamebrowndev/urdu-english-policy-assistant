@@ -33,6 +33,25 @@ highlights the cited source without JavaScript.
 Reviewers see the rerank score in the retrieved-context view, but never raw
 BM25, dense-distance, or RRF scores.
 
+### Referrer policy and the Origin check
+
+Pages send `Referrer-Policy: same-origin`, never `no-referrer`. Under
+`no-referrer`, browsers send `Origin: null` (and no `Referer`) on HTML form
+submissions, per the Fetch spec rules for navigation requests. The same-origin
+check must keep rejecting a null origin, so `no-referrer` would block every form
+in a real browser. This was found in Chrome, not by `TestClient`, which sets
+`Origin` by hand; a test now pins the header. `same-origin` still sends nothing
+to other sites.
+
+### Direction of answers
+
+An answer is rendered as one paragraph whose `lang` and `dir` come from the
+whole answer text. A citation segment gets its own `lang`/`dir` isolate only
+when it contains letters in the other language; punctuation-only segments
+(such as the Urdu full stop) inherit. Without this, an Urdu answer inside the
+English UI laid its segments out left to right, so the sentence read backwards.
+Document titles and section headings in metadata lines are wrapped in `<bdi>`.
+
 ## Consequences
 
 - Every page is inspectable as HTML and testable with `TestClient`.

@@ -410,3 +410,72 @@ def test_i18n_keys_match_and_are_nonempty() -> None:
     assert STRINGS["en"].keys() == STRINGS["ur"].keys()
     assert all(value for value in STRINGS["en"].values())
     assert all(value for value in STRINGS["ur"].values())
+
+
+def test_referrer_policy_keeps_form_origins(web_client: TestClient) -> None:
+    """Browsers send `Origin: null` on form POSTs under `no-referrer` (found in Chrome).
+
+    The same-origin check must keep rejecting a null origin, so the pages must use a
+    referrer policy under which same-origin form submissions carry their real origin.
+    """
+    assert web_client.get("/login").headers["referrer-policy"] == "same-origin"
+    csrf = _login(web_client, "farah")
+    assert web_client.get("/").headers["referrer-policy"] == "same-origin"
+    asked = _web_ask(web_client, csrf, "How many days of annual leave do employees get?")
+    audit_id = _audit_id_from_location(asked.headers["location"])
+
+    null_origin = {"Origin": "null"}
+    posts = [
+        ("/ask", {"question": "annual leave", "csrf_token": csrf}),
+        (f"/review/{audit_id}", {"verdict": "correct", "citation_ok": "true", "csrf_token": csrf}),
+        ("/logout", {"csrf_token": csrf}),
+    ]
+    for path, data in posts:
+        response = web_client.post(path, data=data, headers=null_origin, follow_redirects=False)
+        assert response.status_code == 403, path
+    still_logged_in = web_client.get("/", follow_redirects=False)
+    assert still_logged_in.status_code == 200
+
+    web_client.cookies.clear()
+    null_login = web_client.post(
+        "/login",
+        data={"username": "farah", "password": PASSWORD},
+        headers=null_origin,
+        follow_redirects=False,
+    )
+    assert null_login.status_code == 403
+
+    referer_only = web_client.post(
+        "/login",
+        data={"username": "farah", "password": PASSWORD},
+        headers={"Referer": f"{BASE}/login"},
+        follow_redirects=False,
+    )
+    assert referer_only.status_code == 303
+
+
+def test_form_bounds_review_errors_and_favicon(web_client: TestClient) -> None:
+    too_long = web_client.post(
+        "/login",
+        data={"username": "a" * 65, "password": PASSWORD},
+        headers={"Origin": BASE},
+    )
+    assert too_long.status_code == 422
+
+    csrf = _login(web_client, "farah")
+    asked = _web_ask(web_client, csrf, "How many days of annual leave do employees get?")
+    audit_id = _audit_id_from_location(asked.headers["location"])
+    invalid = web_client.post(
+        f"/review/{audit_id}",
+        data={"verdict": "correct_abstention", "citation_ok": "true", "csrf_token": csrf},
+        headers={"Origin": BASE},
+    )
+    assert invalid.status_code == 422
+    assert STRINGS["en"]["review_invalid"] in invalid.text
+    assert "answered rows require" not in invalid.text
+
+    icon = web_client.get("/static/favicon.svg")
+    assert icon.status_code == 200
+    assert icon.headers["content-type"].startswith("image/svg+xml")
+    assert "<script" not in icon.text
+    assert '<link rel="icon" href="/static/favicon.svg"' in web_client.get("/").text

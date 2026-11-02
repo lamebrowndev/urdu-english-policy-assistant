@@ -42,11 +42,14 @@ from policy_assistant.reviews.store import (
 from policy_assistant.web.i18n import t as translate
 from policy_assistant.web.render import (
     cited_flags,
+    latency_display,
     page_label,
     rerank_display,
+    segment_lang,
     segment_views,
     text_dir,
     text_lang,
+    usage_display,
     verdicts_for,
 )
 
@@ -60,8 +63,11 @@ _env = Environment(
 )
 _env.filters["text_lang"] = text_lang
 _env.filters["text_dir"] = text_dir
+_env.filters["segment_lang"] = segment_lang
 _env.filters["page_label"] = page_label
 _env.filters["rerank_display"] = rerank_display
+_env.filters["usage_display"] = usage_display
+_env.filters["latency_display"] = latency_display
 templates = Jinja2Templates(env=_env)
 
 router = APIRouter()
@@ -280,8 +286,8 @@ def login_page(request: Request) -> Any:
 @router.post("/login")
 def login_submit(
     request: Request,
-    username: str = Form(""),
-    password: str = Form(""),
+    username: str = Form("", max_length=64),
+    password: str = Form("", max_length=1024),
 ) -> Any:
     if not _origin_ok(request):
         return _error_page(request, None, 403, "origin_error")
@@ -305,7 +311,7 @@ def login_submit(
 @router.post("/logout")
 def logout_submit(
     request: Request,
-    csrf_token: str = Form(""),
+    csrf_token: str = Form("", max_length=128),
 ) -> Any:
     user = session_user(request)
     if user is None:
@@ -342,8 +348,8 @@ def chat_page(request: Request, cursor: str | None = None) -> Any:
 @router.post("/ask")
 def ask_submit(
     request: Request,
-    question: str = Form(""),
-    csrf_token: str = Form(""),
+    question: str = Form("", max_length=10000),
+    csrf_token: str = Form("", max_length=128),
 ) -> Any:
     user = session_user(request)
     if user is None:
@@ -433,10 +439,10 @@ def review_item_page(request: Request, audit_id: uuid.UUID) -> Any:
 def review_submit(
     request: Request,
     audit_id: uuid.UUID,
-    verdict: str = Form(""),
-    citation_ok: str = Form(""),
-    notes: str = Form(""),
-    csrf_token: str = Form(""),
+    verdict: str = Form("", max_length=32),
+    citation_ok: str = Form("", max_length=5),
+    notes: str = Form("", max_length=4000),
+    csrf_token: str = Form("", max_length=128),
 ) -> Any:
     user = session_user(request)
     if user is None:
@@ -464,21 +470,21 @@ def review_submit(
     try:
         with request.app.state.pool.connection() as conn:
             review = add_review(conn, user, audit_id, verdict, citation_value, notes)
-    except ReviewConflict as exc:
+    except ReviewConflict:
         return _review_item_page(
             request,
             user,
             audit_id,
             status_code=409,
-            message=str(exc),
+            message=translate(_ui_lang(request), "review_no_form"),
         )
-    except ValueError as exc:
+    except ValueError:
         return _review_item_page(
             request,
             user,
             audit_id,
             status_code=422,
-            message=str(exc),
+            message=translate(_ui_lang(request), "review_invalid"),
         )
     if review is None:
         return _error_page(request, user, 404, "not_found")

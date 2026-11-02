@@ -70,6 +70,10 @@ STRINGS: dict[str, dict[str, str]] = {
         "review_submit": "Save review",
         "review_not_reviewable": "This outcome is not reviewable.",
         "review_no_form": "Error rows cannot be reviewed.",
+        "review_invalid": (
+            "This review could not be saved. Choose a verdict that fits this answer, "
+            "and for answered questions say whether the citations are correct."
+        ),
         "review_model_requested": "Model requested",
         "review_model_served": "Model served",
         "review_stop_reason": "Stop reason",
@@ -175,6 +179,10 @@ STRINGS: dict[str, dict[str, str]] = {
         "review_submit": "جائزہ محفوظ کریں",
         "review_not_reviewable": "یہ نتیجہ قابلِ جائزہ نہیں ہے۔",
         "review_no_form": "خرابی کے نتیجے کا جائزہ نہیں لیا جا سکتا۔",
+        "review_invalid": (
+            "یہ جائزہ محفوظ نہیں ہو سکا۔ اس جواب کے مطابق فیصلہ منتخب کریں، اور جواب والے "
+            "سوالات کے لیے بتائیں کہ حوالہ جات درست ہیں یا نہیں۔"
+        ),
         "review_model_requested": "درخواست کردہ ماڈل",
         "review_model_served": "جواب دینے والا ماڈل",
         "review_stop_reason": "رکنے کی وجہ",

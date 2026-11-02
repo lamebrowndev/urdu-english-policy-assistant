@@ -4,20 +4,26 @@
   <p class="status">{{ t('status_' ~ item.status) }}</p>
   {% if item.status == 'answered' %}
     <p class="meta">{{ t('chat_answer') }}</p>
-    <div class="answer">
-      {% for segment in item.segments %}
-        <span class="block" lang="{{ segment.text|text_lang }}" dir="{{ segment.text|text_dir }}">{{ segment.text }}</span>
-        {% for number in segment.numbers %}
+    {% set answer_lang = item.text|text_lang %}
+    <div class="answer" lang="{{ answer_lang }}" dir="{{ item.text|text_dir }}">
+      {%- for segment in item.segments -%}
+        {%- set seg_lang = segment.text|segment_lang(answer_lang) -%}
+        {%- if seg_lang -%}
+          <span lang="{{ seg_lang }}" dir="{{ 'rtl' if seg_lang == 'ur' else 'ltr' }}">{{ segment.text }}</span>
+        {%- else -%}
+          <span>{{ segment.text }}</span>
+        {%- endif -%}
+        {%- for number in segment.numbers -%}
           <sup class="cite"><a href="#src-{{ item.audit_id }}-{{ number }}">{{ number }}</a></sup>
-        {% endfor %}
-      {% endfor %}
+        {%- endfor -%}
+      {%- endfor -%}
     </div>
     {% if item.sources %}
-      <h2>{{ t('chat_sources') }}</h2>
+      <h3>{{ t('chat_sources') }}</h3>
       <ol class="sources">
         {% for source in item.sources %}
           <li id="src-{{ item.audit_id }}-{{ source.number }}">
-            <p class="meta">{{ source.document_title }} &middot; {{ source.page_start|page_label(source.page_end) }}{% if source.section_heading %} &middot; {{ source.section_heading }}{% endif %}</p>
+            <p class="meta"><bdi lang="{{ source.document_title|text_lang }}">{{ source.document_title }}</bdi> &middot; {{ source.page_start|page_label(source.page_end) }}{% if source.section_heading %} &middot; <bdi lang="{{ source.section_heading|text_lang }}">{{ source.section_heading }}</bdi>{% endif %}</p>
             <div class="block cited" lang="{{ source.cited_text|text_lang }}" dir="{{ source.cited_text|text_dir }}">{{ source.cited_text }}</div>
           </li>
         {% endfor %}

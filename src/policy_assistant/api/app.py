@@ -214,7 +214,11 @@ def create_app(
         response: Response = await call_next(request)
         response.headers["Content-Security-Policy"] = CSP
         response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["Referrer-Policy"] = "no-referrer"
+        # Never "no-referrer": under it, browsers send `Origin: null` on HTML form
+        # POSTs, and the web routes' same-origin check must reject a null origin.
+        # "same-origin" keeps the real origin for our own forms and sends nothing
+        # to other sites.
+        response.headers["Referrer-Policy"] = "same-origin"
         if request.url.path.startswith("/api/"):
             response.headers["Cache-Control"] = "no-store"
         return response

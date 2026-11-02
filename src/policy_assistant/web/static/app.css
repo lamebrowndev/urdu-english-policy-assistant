@@ -36,6 +36,12 @@ body {
   line-height: 2.3;
 }
 
+/* English blocks inside the Urdu UI must not inherit the Nastaliq stack. */
+:lang(en) {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  line-height: 1.6;
+}
+
 a {
   color: var(--accent);
 }
@@ -224,6 +230,8 @@ button:disabled {
 
 .answer {
   margin-block: 0.5rem;
+  overflow-wrap: anywhere;
+  text-align: start;
 }
 
 .cite {

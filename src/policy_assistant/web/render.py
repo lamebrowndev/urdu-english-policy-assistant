@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from policy_assistant.answering.language import answer_language
+from policy_assistant.text.language import script_letter_counts
 
 
 def text_lang(text: str) -> str:
@@ -13,6 +14,24 @@ def text_lang(text: str) -> str:
 
 def text_dir(text: str) -> str:
     return "rtl" if text_lang(text) == "ur" else "ltr"
+
+
+def has_letters(text: str) -> bool:
+    arabic, latin = script_letter_counts(str(text))
+    return arabic + latin > 0
+
+
+def segment_lang(text: str, container_lang: str) -> str | None:
+    """Language to mark on an answer segment, or None to inherit the container's.
+
+    Punctuation-only segments (for example the Urdu full stop) and segments in the
+    container's language inherit, so the whole answer keeps one paragraph
+    direction; only a genuinely foreign-language run gets its own isolate.
+    """
+    if not has_letters(text):
+        return None
+    lang = text_lang(text)
+    return None if lang == container_lang else lang
 
 
 def page_label(start: int, end: int) -> str:
@@ -71,3 +90,25 @@ def rerank_display(value: float | None) -> str:
     if value is None:
         return "-"
     return f"{value:.3f}"
+
+
+def usage_display(usage: dict[str, Any] | None) -> str:
+    if not usage:
+        return "-"
+    text = (
+        f"input {int(usage.get('input_tokens', 0))} · "
+        f"output {int(usage.get('output_tokens', 0))} tokens"
+    )
+    cache_read = usage.get("cache_read_input_tokens")
+    cache_write = usage.get("cache_creation_input_tokens")
+    if cache_read:
+        text += f" · cache read {int(cache_read)}"
+    if cache_write:
+        text += f" · cache write {int(cache_write)}"
+    return text
+
+
+def latency_display(value: float | None) -> str:
+    if value is None:
+        return "-"
+    return f"{round(float(value))} ms"

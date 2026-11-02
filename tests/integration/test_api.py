@@ -188,7 +188,7 @@ def test_security_headers_and_docs(api_client: TestClient) -> None:
     for response in (ok,):
         assert response.headers["content-security-policy"] == expected_csp
         assert response.headers["x-content-type-options"] == "nosniff"
-        assert response.headers["referrer-policy"] == "no-referrer"
+        assert response.headers["referrer-policy"] == "same-origin"
         assert response.headers["cache-control"] == "no-store"
 
     api_client.cookies.clear()
