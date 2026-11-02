@@ -47,13 +47,14 @@ def _download(url: str, destination: Path) -> str:
     digest = hashlib.sha256()
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     try:
-        with (
-            urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response,
-            part.open("wb") as handle,
-        ):
-            while block := response.read(1024 * 1024):
-                handle.write(block)
-                digest.update(block)
+        with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
+            final_url = response.geturl()
+            if not final_url.startswith("https://"):
+                raise RuntimeError(f"refusing non-https response: {final_url}")
+            with part.open("wb") as handle:
+                while block := response.read(1024 * 1024):
+                    handle.write(block)
+                    digest.update(block)
         return digest.hexdigest()
     except Exception:
         part.unlink(missing_ok=True)
