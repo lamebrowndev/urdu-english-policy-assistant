@@ -314,3 +314,19 @@ def test_real_counter_on_urdu_and_english() -> None:
     counter = load_bge_m3_counter(settings.tokenizer_repo, settings.tokenizer_revision)
     assert counter("یہ ایک اردو جملہ ہے۔") > 0
     assert counter("This is an English sentence.") > 0
+
+
+def test_first_heading_is_adopted_by_preamble_chunk() -> None:
+    pages = [
+        (
+            1,
+            "Fictional sample — this is not a real policy.\n"
+            "1. Purpose\n"
+            "Sitara publishes this leave policy.",
+        )
+    ]
+    chunks = chunk_document(
+        pages, "en", word_count, max_tokens=100, overlap_tokens=3, min_tokens=50
+    )
+    assert chunks[0].section_heading == "1. Purpose"
+    assert "1. Purpose" in chunks[0].sentences

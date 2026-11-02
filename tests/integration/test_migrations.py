@@ -22,6 +22,11 @@ def test_migrations_are_idempotent_and_pgvector_is_new_enough(db_dsn: str) -> No
         ).fetchone()
         assert row is not None
         assert tuple(int(part) for part in str(row[0]).split(".")) >= (0, 8, 0)
+        index_row = conn.execute(
+            "SELECT indexname FROM pg_indexes "
+            "WHERE tablename = 'chunks' AND indexname = 'chunks_embedding_hnsw_idx'"
+        ).fetchone()
+        assert index_row is not None
 
 
 def test_tampered_checksum_is_detected(db_dsn: str) -> None:

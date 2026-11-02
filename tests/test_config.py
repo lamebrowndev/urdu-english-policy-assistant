@@ -37,3 +37,16 @@ def test_chunk_limits_must_be_below_max() -> None:
     settings = Settings(chunk_max_tokens=350, chunk_overlap_tokens=0, chunk_min_tokens=0)
     assert settings.chunk_overlap_tokens == 0
     assert settings.chunk_min_tokens == 0
+
+
+def test_retrieval_limits_must_be_ordered() -> None:
+    with pytest.raises(ValidationError):
+        Settings(retrieve_top_k=10, rerank_candidates=5)
+    with pytest.raises(ValidationError):
+        Settings(rerank_candidates=60, retrieve_candidates=50)
+    settings = Settings(
+        retrieve_top_k=8,
+        rerank_candidates=8,
+        retrieve_candidates=8,
+    )
+    assert settings.rerank_candidates == 8
