@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -61,6 +61,14 @@ class Settings(BaseSettings):
         if value.is_absolute():
             return value
         return (find_repo_root() / value).resolve()
+
+    @model_validator(mode="after")
+    def _validate_chunk_limits(self) -> Settings:
+        if not 0 <= self.chunk_overlap_tokens < self.chunk_max_tokens:
+            raise ValueError("chunk_overlap_tokens must be >= 0 and < chunk_max_tokens")
+        if not 0 <= self.chunk_min_tokens < self.chunk_max_tokens:
+            raise ValueError("chunk_min_tokens must be >= 0 and < chunk_max_tokens")
+        return self
 
 
 def get_settings() -> Settings:

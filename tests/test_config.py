@@ -1,5 +1,8 @@
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
 from policy_assistant.config import Settings, find_repo_root
 
 
@@ -24,3 +27,13 @@ def test_repo_root_is_nearest_pyproject(tmp_path: Path) -> None:
     nested = tmp_path / "a" / "b"
     nested.mkdir(parents=True)
     assert find_repo_root(nested) == tmp_path
+
+
+def test_chunk_limits_must_be_below_max() -> None:
+    with pytest.raises(ValidationError):
+        Settings(chunk_max_tokens=350, chunk_overlap_tokens=350)
+    with pytest.raises(ValidationError):
+        Settings(chunk_max_tokens=350, chunk_min_tokens=350)
+    settings = Settings(chunk_max_tokens=350, chunk_overlap_tokens=0, chunk_min_tokens=0)
+    assert settings.chunk_overlap_tokens == 0
+    assert settings.chunk_min_tokens == 0
