@@ -8,7 +8,7 @@ from dataclasses import dataclass, replace
 from typing import Literal
 
 from policy_assistant.ingest.tokens import TokenCounter
-from policy_assistant.text.language import detect_language
+from policy_assistant.text.language import detect_language, is_arabic_letter
 from policy_assistant.text.normalize import fold
 from policy_assistant.text.sentences import split_sentences
 
@@ -32,7 +32,8 @@ _LATIN_HEADING_RE = re.compile(
     r"^(chapter|part|section|article|rule|regulation|schedule|annex|annexure|appendix)"
     r"\s+[0-9ivxlcdm]+[a-z]?\b"
 )
-_NUMBERED_HEADING_RE = re.compile(r"^[0-9]{1,2}(\.[0-9]{1,2}){0,3}[.)]?\s+\S")
+_SINGLE_LEVEL_HEADING_RE = re.compile(r"^[0-9]{1,2}[.)]\s+\S")
+_MULTI_LEVEL_HEADING_RE = re.compile(r"^[0-9]{1,2}(\.[0-9]{1,2}){1,3}\.?\s+\S")
 _END_PUNCTUATION = (".", "?", ":", ";", ",")
 
 
@@ -62,25 +63,32 @@ class ChunkDraft:
     page_end: int
     token_count: int
     content_sha256: str
+    overlap_count: int
 
 
 def _is_upper_heading(line: str) -> bool:
+    if any(is_arabic_letter(char) for char in line):
+        return False
     latin = [char for char in line if char.isascii() and char.isalpha()]
     return len(latin) >= 4 and line == line.upper()
 
 
 def _is_heading(line: str) -> bool:
     stripped = line.strip()
-    if not stripped or stripped.endswith(_END_PUNCTUATION):
+    if not stripped:
         return False
     folded = fold(stripped)
+    if not folded or folded.endswith(_END_PUNCTUATION):
+        return False
     if len(folded.split()) > 12:
         return False
     if _LATIN_HEADING_RE.match(folded):
         return True
     if _URDU_HEADING_RE.match(folded):
         return True
-    if _NUMBERED_HEADING_RE.match(folded):
+    if _SINGLE_LEVEL_HEADING_RE.match(folded):
+        return True
+    if _MULTI_LEVEL_HEADING_RE.match(folded):
         return True
     return _is_upper_heading(stripped)
 
@@ -184,6 +192,7 @@ def _make_draft(
     ordinal: int,
     sentences: list[tuple[int, str]],
     heading: str | None,
+    overlap_count: int,
     doc_language: ChunkLanguage,
     count_tokens: TokenCounter,
 ) -> ChunkDraft:
@@ -201,14 +210,8 @@ def _make_draft(
         page_end=max(pages),
         token_count=count_tokens(text),
         content_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        overlap_count=overlap_count,
     )
-
-
-def _overlap_length(previous: tuple[str, ...], current: tuple[str, ...]) -> int:
-    for length in range(min(len(previous), len(current)), 0, -1):
-        if previous[-length:] == current[:length]:
-            return length
-    return 0
 
 
 def chunk_document(
@@ -226,31 +229,46 @@ def chunk_document(
 
     drafts: list[ChunkDraft] = []
     current: list[tuple[int, str]] = []
+    current_overlap = 0
     heading: str | None = None
     pending_heading: str | None = None
 
     def emit() -> None:
         if current:
-            drafts.append(_make_draft(len(drafts), current, heading, doc_language, count_tokens))
+            drafts.append(
+                _make_draft(
+                    len(drafts),
+                    current,
+                    heading,
+                    current_overlap,
+                    doc_language,
+                    count_tokens,
+                )
+            )
 
     for block in blocks:
         if isinstance(block, Heading):
             if not current:
                 heading = block.text
+                current_overlap = 0
             elif count_tokens(_joined(current)) >= min_tokens:
                 emit()
                 current = []
+                current_overlap = 0
                 heading = block.text
                 pending_heading = None
             else:
                 pending_heading = block.text
-            continue
+            content = _split_overlong(Sentence(block.page, block.text), count_tokens, max_tokens)
+        else:
+            content = _split_overlong(block, count_tokens, max_tokens)
 
-        for sentence in _split_overlong(block, count_tokens, max_tokens):
+        for sentence in content:
             if not current:
                 if pending_heading is not None:
                     heading = pending_heading
                     pending_heading = None
+                current_overlap = 0
                 current.append((sentence.page, sentence.text))
                 continue
 
@@ -271,6 +289,7 @@ def chunk_document(
                 ):
                     overlap = []
             current = list(overlap)
+            current_overlap = len(overlap)
             heading = pending_heading
             pending_heading = None
             current.append((sentence.page, sentence.text))
@@ -280,8 +299,10 @@ def chunk_document(
     if len(drafts) > 1 and drafts[-1].token_count < min_tokens:
         prior_draft = drafts[-2]
         last_draft = drafts[-1]
-        overlap_count = _overlap_length(prior_draft.sentences, last_draft.sentences)
-        merged_sentences = [*prior_draft.sentences, *last_draft.sentences[overlap_count:]]
+        merged_sentences = [
+            *prior_draft.sentences,
+            *last_draft.sentences[last_draft.overlap_count :],
+        ]
         merged_text = " ".join(merged_sentences)
         if count_tokens(merged_text) <= max_tokens:
             pages_for_merge = [(prior_draft.page_start, text) for text in merged_sentences]
@@ -289,6 +310,7 @@ def chunk_document(
                 prior_draft.ordinal,
                 pages_for_merge,
                 prior_draft.section_heading or last_draft.section_heading,
+                prior_draft.overlap_count,
                 doc_language,
                 count_tokens,
             )
