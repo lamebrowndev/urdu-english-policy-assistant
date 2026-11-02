@@ -36,7 +36,7 @@ _ABBREVIATIONS = frozenset(
     }
 )
 _BOUNDARY = re.compile(r"""[.!?۔؟]+["'”’)\]]*(?=\s|$)""")
-_LIST_MARKER = re.compile(r"^\(?(\d{1,3}|[ivxlcdm]{1,6}|[a-z])[.)]$", re.IGNORECASE)
+_LIST_MARKER = re.compile(r"^\(?(\d{1,3}|[ivxlcdm]{1,6}|[a-z])[.)۔]$", re.IGNORECASE)
 _TRAILING_TOKEN = re.compile(r"(\S+)$")
 
 
