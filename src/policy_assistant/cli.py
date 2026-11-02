@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from contextlib import closing
 from pathlib import Path
 from typing import Annotated, Any
@@ -31,6 +32,9 @@ from policy_assistant.ingest.quality import (
     assess_document,
 )
 from policy_assistant.ingest.tokens import load_bge_m3_counter
+from policy_assistant.retrieval.models import SentenceTransformerEmbedder
+
+LOGGER = logging.getLogger(__name__)
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, help="Urdu/English policy assistant.")
 db_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Database commands.")
@@ -380,6 +384,9 @@ def ingest_command(
     try:
         manifest, _, settings = _load_manifest(manifest_option)
         count_tokens = load_bge_m3_counter(settings.tokenizer_repo, settings.tokenizer_revision)
+        embedder = SentenceTransformerEmbedder(settings)
+        LOGGER.info("embedding device: %s", embedder.device)
+        started = time.perf_counter()
         report = run_ingest(
             manifest,
             repo_root=find_repo_root(),
@@ -387,8 +394,10 @@ def ingest_command(
             force=force,
             prune=prune,
             count_tokens=count_tokens,
+            embedder=embedder,
             settings=settings,
         )
+        LOGGER.info("ingest finished in %.2fs", time.perf_counter() - started)
     except (ManifestError, IngestError, psycopg.Error) as exc:
         typer.secho(f"ingest failed: {exc}", err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1) from exc
@@ -431,6 +440,19 @@ def stats_command() -> None:
                 WHERE NOT EXISTS (SELECT 1 FROM chunks c WHERE c.document_id = d.id)
                 """
             ).fetchone()
+            missing_embeddings = conn.execute(
+                "SELECT count(*) FROM chunks WHERE embedding IS NULL"
+            ).fetchone()
+            missing_bm25 = conn.execute(
+                """
+                SELECT count(*) FROM chunks c
+                WHERE c.bm25_length IS NULL
+                   OR c.bm25_length <> COALESCE(
+                       (SELECT sum(tf) FROM chunk_terms ct WHERE ct.chunk_id = c.id),
+                       0
+                   )
+                """
+            ).fetchone()
     except psycopg.Error as exc:
         typer.secho(f"database unavailable: {exc}", err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1) from exc
@@ -452,6 +474,8 @@ def stats_command() -> None:
     typer.echo(
         f"documents with zero chunks: {zero_chunk_documents[0] if zero_chunk_documents else 0}"
     )
+    typer.echo(f"chunks missing embedding: {missing_embeddings[0] if missing_embeddings else 0}")
+    typer.echo(f"chunks missing bm25 data: {missing_bm25[0] if missing_bm25 else 0}")
 
 
 if __name__ == "__main__":

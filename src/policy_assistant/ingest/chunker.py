@@ -257,6 +257,8 @@ def chunk_document(
                 current_overlap = 0
                 heading = block.text
                 pending_heading = None
+            elif heading is None:
+                heading = block.text
             else:
                 pending_heading = block.text
             content = _split_overlong(Sentence(block.page, block.text), count_tokens, max_tokens)

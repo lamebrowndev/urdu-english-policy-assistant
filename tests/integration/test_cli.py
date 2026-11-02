@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 
 from policy_assistant.cli import app
 from policy_assistant.db.connection import connect
+from tests.fakes import HashingEmbedder
 
 pytestmark = pytest.mark.integration
 
@@ -51,6 +52,7 @@ def test_quarantined_document_is_absent_and_cli_exits_two(
     db_dsn: str,
     tmp_path: Path,
     fake_counter: Callable[[str], int],
+    fake_embedder: HashingEmbedder,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = tmp_path / "repo"
@@ -62,6 +64,10 @@ def test_quarantined_document_is_absent_and_cli_exits_two(
     monkeypatch.setattr(
         "policy_assistant.cli.load_bge_m3_counter",
         lambda repo, revision: fake_counter,
+    )
+    monkeypatch.setattr(
+        "policy_assistant.cli.SentenceTransformerEmbedder",
+        lambda settings: fake_embedder,
     )
     result = CliRunner().invoke(
         app,

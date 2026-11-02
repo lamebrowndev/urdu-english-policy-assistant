@@ -6,11 +6,16 @@ import hashlib
 import importlib.metadata
 import json
 import logging
+import time
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import psycopg
+from numpy.typing import NDArray
+from pgvector.psycopg import register_vector
 from psycopg.types.json import Jsonb
 
 from policy_assistant.config import Settings
@@ -26,10 +31,13 @@ from policy_assistant.ingest.quality import (
     assess_document,
 )
 from policy_assistant.ingest.tokens import TokenCounter
+from policy_assistant.retrieval.context import retrieval_text
+from policy_assistant.retrieval.models import Embedder
+from policy_assistant.text.terms import bm25_terms, stopword_checksums
 
 LOGGER = logging.getLogger(__name__)
 
-PIPELINE_VERSION = "2"
+PIPELINE_VERSION = "3"
 INGEST_ADVISORY_LOCK_ID = 0x757061696E67  # "upaing"
 
 
@@ -43,6 +51,13 @@ class DocumentResult:
     status: str
     message: str = ""
     quality: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedChunk:
+    draft: ChunkDraft
+    terms: tuple[str, ...]
+    embedding: NDArray[np.float32]
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,9 +90,15 @@ def pipeline_fingerprint(settings: Settings) -> str:
             "overlap_tokens": settings.chunk_overlap_tokens,
             "min_tokens": settings.chunk_min_tokens,
         },
+        "embedding": {
+            "repo": settings.embedding_repo,
+            "revision": settings.embedding_revision,
+        },
+        "stopwords": stopword_checksums(),
         "libraries": {
             "pypdfium2": importlib.metadata.version("pypdfium2"),
             "wordfreq": importlib.metadata.version("wordfreq"),
+            "snowballstemmer": importlib.metadata.version("snowballstemmer"),
         },
         "quality": {
             "min_chars": settings.quality_min_chars,
@@ -120,6 +141,44 @@ def _sync_acl(conn: psycopg.Connection[Any], document_id: str, group_ids: list[s
         )
 
 
+def _prepare_chunks(
+    document: DocumentSpec,
+    drafts: list[ChunkDraft],
+    embedder: Embedder,
+    settings: Settings,
+) -> list[_PreparedChunk]:
+    if embedder.dimension != 1024:
+        raise IngestError(f"embedder dimension must be 1024, got {embedder.dimension}")
+    started = time.perf_counter()
+    texts = [retrieval_text(document.title, draft.section_heading, draft.text) for draft in drafts]
+    terms = [tuple(bm25_terms(text)) for text in texts]
+    batches: list[NDArray[np.float32]] = []
+    for start in range(0, len(texts), settings.embed_batch_size):
+        batch_texts = texts[start : start + settings.embed_batch_size]
+        vectors = np.asarray(embedder.embed(batch_texts), dtype=np.float32)
+        if vectors.ndim != 2 or vectors.shape != (
+            len(batch_texts),
+            embedder.dimension,
+        ):
+            raise IngestError(
+                f"embedder returned shape {vectors.shape}, expected "
+                f"({len(batch_texts)}, {embedder.dimension})"
+            )
+        batches.append(vectors)
+    matrix = np.vstack(batches) if batches else np.zeros((0, embedder.dimension), dtype=np.float32)
+    prepared = [
+        _PreparedChunk(draft=draft, terms=term_list, embedding=matrix[index])
+        for index, (draft, term_list) in enumerate(zip(drafts, terms, strict=True))
+    ]
+    LOGGER.info(
+        "embedded %d chunks for %s in %.2fs",
+        len(prepared),
+        document.id,
+        time.perf_counter() - started,
+    )
+    return prepared
+
+
 def _insert_document(
     conn: psycopg.Connection[Any],
     document: DocumentSpec,
@@ -127,7 +186,7 @@ def _insert_document(
     page_count: int,
     fingerprint: str,
     assessment: DocumentAssessment,
-    drafts: list[ChunkDraft],
+    prepared: list[_PreparedChunk],
 ) -> None:
     conn.execute(
         """
@@ -167,25 +226,41 @@ def _insert_document(
             """
             INSERT INTO chunks (
                 document_id, ordinal, sentences, text, section_heading, language,
-                page_start, page_end, token_count, content_sha256
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                page_start, page_end, token_count, content_sha256, embedding,
+                bm25_length
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             [
                 (
                     document.id,
-                    draft.ordinal,
-                    list(draft.sentences),
-                    draft.text,
-                    draft.section_heading,
-                    draft.language,
-                    draft.page_start,
-                    draft.page_end,
-                    draft.token_count,
-                    draft.content_sha256,
+                    item.draft.ordinal,
+                    list(item.draft.sentences),
+                    item.draft.text,
+                    item.draft.section_heading,
+                    item.draft.language,
+                    item.draft.page_start,
+                    item.draft.page_end,
+                    item.draft.token_count,
+                    item.draft.content_sha256,
+                    item.embedding,
+                    len(item.terms),
                 )
-                for draft in drafts
+                for item in prepared
             ],
         )
+
+    id_rows = conn.execute(
+        "SELECT id, ordinal FROM chunks WHERE document_id = %s", (document.id,)
+    ).fetchall()
+    ids_by_ordinal = {int(row[1]): int(row[0]) for row in id_rows}
+    with (
+        conn.cursor() as cursor,
+        cursor.copy("COPY chunk_terms (term, chunk_id, tf) FROM STDIN") as copy,
+    ):
+        for item in prepared:
+            chunk_id = ids_by_ordinal[item.draft.ordinal]
+            for term, tf in Counter(item.terms).items():
+                copy.write_row((term, chunk_id, tf))
 
 
 def _write_report(
@@ -245,6 +320,7 @@ def ingest(
     force: bool,
     prune: bool,
     count_tokens: TokenCounter,
+    embedder: Embedder,
     settings: Settings,
 ) -> IngestReport:
     """Ingest selected documents. Explicit inputs keep tests hermetic."""
@@ -259,6 +335,7 @@ def ingest(
     results: list[DocumentResult] = []
 
     with connect(settings.database_url, autocommit=True) as conn:
+        register_vector(conn)
         pending = pending_migrations(conn)
         if pending:
             names = ", ".join(migration.version for migration in pending)
@@ -367,6 +444,7 @@ def ingest(
                         )
                         continue
 
+                    prepared = _prepare_chunks(document, drafts, embedder, settings)
                     with conn.transaction():
                         _delete_document(conn, document.id)
                         _insert_document(
@@ -375,7 +453,7 @@ def ingest(
                             page_count=len(assessment.pages),
                             fingerprint=fingerprint,
                             assessment=assessment,
-                            drafts=drafts,
+                            prepared=prepared,
                         )
                     results.append(DocumentResult(document.id, "ingested", quality=quality))
                 except Exception as exc:

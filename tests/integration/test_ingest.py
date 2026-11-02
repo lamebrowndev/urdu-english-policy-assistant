@@ -14,6 +14,7 @@ from policy_assistant.ingest.pipeline import (
     IngestReport,
     ingest,
 )
+from tests.fakes import HashingEmbedder
 
 pytestmark = pytest.mark.integration
 
@@ -23,6 +24,7 @@ def run_ingest(
     root: Path,
     settings: Settings,
     count_tokens: Callable[[str], int],
+    embedder: HashingEmbedder,
     *,
     force: bool = False,
     prune: bool = False,
@@ -34,6 +36,7 @@ def run_ingest(
         force=force,
         prune=prune,
         count_tokens=count_tokens,
+        embedder=embedder,
         settings=settings,
     )
 
@@ -50,8 +53,9 @@ def test_sample_ingest_and_rerun(
     sample_manifest: Manifest,
     settings_for: Settings,
     fake_counter: Callable[[str], int],
+    fake_embedder: HashingEmbedder,
 ) -> None:
-    report = run_ingest(sample_manifest, sample_repo, settings_for, fake_counter)
+    report = run_ingest(sample_manifest, sample_repo, settings_for, fake_counter, fake_embedder)
     assert [result.status for result in report.results] == ["ingested"] * 3
 
     with connect(db_dsn) as conn:
@@ -92,7 +96,7 @@ def test_sample_ingest_and_rerun(
         assert bad_invariants == 0
 
     first_ids = chunk_ids(db_dsn)
-    second = run_ingest(sample_manifest, sample_repo, settings_for, fake_counter)
+    second = run_ingest(sample_manifest, sample_repo, settings_for, fake_counter, fake_embedder)
     assert [result.status for result in second.results] == ["unchanged"] * 3
     assert chunk_ids(db_dsn) == first_ids
 
@@ -103,8 +107,9 @@ def test_acl_edit_syncs_without_rechunking(
     sample_manifest: Manifest,
     settings_for: Settings,
     fake_counter: Callable[[str], int],
+    fake_embedder: HashingEmbedder,
 ) -> None:
-    run_ingest(sample_manifest, sample_repo, settings_for, fake_counter)
+    run_ingest(sample_manifest, sample_repo, settings_for, fake_counter, fake_embedder)
     initial_ids = chunk_ids(db_dsn)
 
     edits = [
@@ -114,7 +119,7 @@ def test_acl_edit_syncs_without_rechunking(
         for document in sample_manifest.documents
     ]
     edited = sample_manifest.model_copy(update={"documents": edits})
-    report = run_ingest(edited, sample_repo, settings_for, fake_counter)
+    report = run_ingest(edited, sample_repo, settings_for, fake_counter, fake_embedder)
     assert [result.status for result in report.results] == ["unchanged"] * 3
     assert chunk_ids(db_dsn) == initial_ids
 
@@ -125,7 +130,7 @@ def test_acl_edit_syncs_without_rechunking(
         ).fetchall()
     assert [row[0] for row in acl_rows] == ["all_staff", "hr"]
 
-    forced = run_ingest(edited, sample_repo, settings_for, fake_counter, force=True)
+    forced = run_ingest(edited, sample_repo, settings_for, fake_counter, fake_embedder, force=True)
     assert [result.status for result in forced.results] == ["ingested"] * 3
     assert chunk_ids(db_dsn) != initial_ids
 
@@ -136,11 +141,12 @@ def test_changed_chunk_setting_reingests(
     sample_manifest: Manifest,
     settings_for: Settings,
     fake_counter: Callable[[str], int],
+    fake_embedder: HashingEmbedder,
 ) -> None:
-    run_ingest(sample_manifest, sample_repo, settings_for, fake_counter)
+    run_ingest(sample_manifest, sample_repo, settings_for, fake_counter, fake_embedder)
     initial_ids = chunk_ids(db_dsn)
     changed = settings_for.model_copy(update={"chunk_max_tokens": 300, "chunk_min_tokens": 50})
-    report = run_ingest(sample_manifest, sample_repo, changed, fake_counter)
+    report = run_ingest(sample_manifest, sample_repo, changed, fake_counter, fake_embedder)
     assert [result.status for result in report.results] == ["ingested"] * 3
     assert chunk_ids(db_dsn) != initial_ids
 
@@ -151,14 +157,15 @@ def test_sha256_mismatch_leaves_rows_untouched(
     sample_manifest: Manifest,
     settings_for: Settings,
     fake_counter: Callable[[str], int],
+    fake_embedder: HashingEmbedder,
 ) -> None:
-    run_ingest(sample_manifest, sample_repo, settings_for, fake_counter)
+    run_ingest(sample_manifest, sample_repo, settings_for, fake_counter, fake_embedder)
     before = chunk_ids(db_dsn)
 
     target = sample_repo / "corpus/samples/leave-policy-en.txt"
     target.write_text(target.read_text(encoding="utf-8") + "\nchanged\n", encoding="utf-8")
 
-    report = run_ingest(sample_manifest, sample_repo, settings_for, fake_counter)
+    report = run_ingest(sample_manifest, sample_repo, settings_for, fake_counter, fake_embedder)
     by_id = {result.document_id: result for result in report.results}
     assert by_id["leave-policy-en"].status == "error"
     assert by_id["leave-policy-ur"].status == "unchanged"
@@ -178,8 +185,9 @@ def test_prune_removes_documents_and_groups(
     sample_manifest: Manifest,
     settings_for: Settings,
     fake_counter: Callable[[str], int],
+    fake_embedder: HashingEmbedder,
 ) -> None:
-    run_ingest(sample_manifest, sample_repo, settings_for, fake_counter)
+    run_ingest(sample_manifest, sample_repo, settings_for, fake_counter, fake_embedder)
     reduced = sample_manifest.model_copy(
         update={
             "documents": [
@@ -191,7 +199,7 @@ def test_prune_removes_documents_and_groups(
         }
     )
 
-    report = run_ingest(reduced, sample_repo, settings_for, fake_counter)
+    report = run_ingest(reduced, sample_repo, settings_for, fake_counter, fake_embedder)
     assert report.stale_documents == ("finance-approvals-en",)
     assert report.stale_groups == ("finance", "hr")
     with connect(db_dsn) as conn:
@@ -202,7 +210,7 @@ def test_prune_removes_documents_and_groups(
             == 1
         )
 
-    pruned = run_ingest(reduced, sample_repo, settings_for, fake_counter, prune=True)
+    pruned = run_ingest(reduced, sample_repo, settings_for, fake_counter, fake_embedder, prune=True)
     assert pruned.stale_documents == ("finance-approvals-en",)
     with connect(db_dsn) as conn:
         assert (
@@ -247,11 +255,12 @@ def test_advisory_lock_blocks_concurrent_ingest(
     sample_manifest: Manifest,
     settings_for: Settings,
     fake_counter: Callable[[str], int],
+    fake_embedder: HashingEmbedder,
 ) -> None:
     with connect(db_dsn, autocommit=True) as blocker:
         blocker.execute("SELECT pg_advisory_lock(%s)", (INGEST_ADVISORY_LOCK_ID,))
         try:
             with pytest.raises(IngestError, match="another ingest is running"):
-                run_ingest(sample_manifest, sample_repo, settings_for, fake_counter)
+                run_ingest(sample_manifest, sample_repo, settings_for, fake_counter, fake_embedder)
         finally:
             blocker.execute("SELECT pg_advisory_unlock(%s)", (INGEST_ADVISORY_LOCK_ID,))

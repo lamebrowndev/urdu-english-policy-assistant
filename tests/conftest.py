@@ -13,6 +13,7 @@ from policy_assistant.config import Settings
 from policy_assistant.db.connection import connect
 from policy_assistant.db.migrate import migrate
 from policy_assistant.ingest.manifest import Manifest
+from tests.fakes import HashingEmbedder, OverlapReranker
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -70,3 +71,13 @@ def sample_manifest(sample_repo: Path) -> Manifest:
 @pytest.fixture
 def settings_for(db_dsn: str, tmp_path: Path) -> Settings:
     return Settings(database_url=db_dsn, data_dir=tmp_path / "data")
+
+
+@pytest.fixture
+def fake_embedder() -> HashingEmbedder:
+    return HashingEmbedder()
+
+
+@pytest.fixture
+def fake_reranker() -> OverlapReranker:
+    return OverlapReranker()

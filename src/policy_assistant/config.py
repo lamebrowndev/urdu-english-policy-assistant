@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -40,6 +41,21 @@ class Settings(BaseSettings):
     tokenizer_repo: str = "BAAI/bge-m3"
     tokenizer_revision: str = "5617a9f61b028005a4858fdac845db406aefb181"
 
+    embedding_repo: str = "BAAI/bge-m3"
+    embedding_revision: str = "5617a9f61b028005a4858fdac845db406aefb181"
+    reranker_repo: str = "BAAI/bge-reranker-v2-m3"
+    reranker_revision: str = "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e"
+    device: Literal["auto", "cpu", "mps", "cuda"] = "auto"
+    embed_batch_size: int = Field(default=16, gt=0)
+
+    bm25_k1: float = Field(default=1.2, gt=0)
+    bm25_b: float = Field(default=0.75, ge=0, le=1)
+    retrieve_candidates: int = Field(default=50, gt=0)
+    rrf_k: int = Field(default=60, gt=0)
+    rerank_candidates: int = Field(default=30, gt=0)
+    retrieve_top_k: int = Field(default=8, gt=0)
+    hnsw_ef_search: int = Field(default=100, gt=0)
+
     chunk_max_tokens: int = Field(default=350, gt=0)
     chunk_overlap_tokens: int = Field(default=50, ge=0)
     chunk_min_tokens: int = Field(default=60, ge=0)
@@ -68,6 +84,14 @@ class Settings(BaseSettings):
             raise ValueError("chunk_overlap_tokens must be >= 0 and < chunk_max_tokens")
         if not 0 <= self.chunk_min_tokens < self.chunk_max_tokens:
             raise ValueError("chunk_min_tokens must be >= 0 and < chunk_max_tokens")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_retrieval_limits(self) -> Settings:
+        if not (1 <= self.retrieve_top_k <= self.rerank_candidates <= self.retrieve_candidates):
+            raise ValueError(
+                "retrieve_top_k <= rerank_candidates <= retrieve_candidates is required"
+            )
         return self
 
 
