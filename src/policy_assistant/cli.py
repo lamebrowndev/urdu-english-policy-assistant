@@ -314,9 +314,7 @@ def corpus_inspect(
     typer.echo(f"report: {report_path}")
     for document_id, message in errors:
         typer.secho(f"{document_id}: error: {message}", err=True, fg=typer.colors.RED)
-    if errors:
-        raise typer.Exit(code=1)
-    if quarantined:
+    if errors or quarantined:
         raise typer.Exit(code=2)
 
 

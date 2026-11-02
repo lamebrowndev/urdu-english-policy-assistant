@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.13"
+      - name: Install dependencies
+        run: uv sync --locked
+      - name: Check formatting, lint, types, and tests
+        run: make check
+      - name: Build distributions
+        run: uv build
+      - name: Verify packaged migrations
+        run: |
+          uv run python - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          wheels = sorted(Path("dist").glob("*.whl"))
+          if len(wheels) != 1:
+              raise SystemExit(f"Expected exactly one wheel, found: {wheels}")
+          with ZipFile(wheels[0]) as wheel:
+              names = set(wheel.namelist())
+          required = {
+              "policy_assistant/db/migrations/0001_init.sql",
+          }
+          missing = required - names
+          if missing:
+              raise SystemExit(f"Wheel is missing packaged migrations: {sorted(missing)}")
+          print("Wheel contains policy_assistant/db/migrations/0001_init.sql")
+          PY
+
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: pgvector/pgvector:0.8.7-pg17
+        env:
+          POSTGRES_USER: upa
+          POSTGRES_PASSWORD: upa_ci_password
+          POSTGRES_DB: upa_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U upa -d upa_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.13"
+      - name: Install dependencies
+        run: uv sync --locked
+      - name: Run integration tests
+        run: make test-integration
+        env:
+          UPA_TEST_DATABASE_URL: postgresql://upa:upa_ci_password@localhost:5432/upa_test
+          UPA_REQUIRE_DB: "1"

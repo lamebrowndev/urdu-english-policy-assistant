@@ -14,7 +14,7 @@ from policy_assistant.db.connection import connect
 from policy_assistant.db.migrate import migrate
 from policy_assistant.ingest.manifest import Manifest
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_database_url() -> str:
