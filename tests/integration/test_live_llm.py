@@ -19,8 +19,8 @@ from policy_assistant.text.language import script_letter_counts
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(
-        os.environ.get("UPA_LLM_TESTS") != "1" or not os.environ.get("ANTHROPIC_API_KEY"),
-        reason="live LLM tests require UPA_LLM_TESTS=1 and ANTHROPIC_API_KEY",
+        os.environ.get("UPA_LLM_TESTS") != "1",
+        reason="set UPA_LLM_TESTS=1 to run live LLM tests",
     ),
 ]
 

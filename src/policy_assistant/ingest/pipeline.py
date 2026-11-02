@@ -481,6 +481,9 @@ def ingest(
                               AND NOT EXISTS (
                                   SELECT 1 FROM document_acl WHERE group_id = groups.id
                               )
+                              AND NOT EXISTS (
+                                  SELECT 1 FROM user_groups WHERE group_id = groups.id
+                              )
                             """,
                             (stale_groups,),
                         )

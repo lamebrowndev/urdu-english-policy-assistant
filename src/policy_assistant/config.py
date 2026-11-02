@@ -64,6 +64,14 @@ class Settings(BaseSettings):
     answer_mode: Literal["bm25", "dense", "hybrid", "hybrid_rerank"] = "hybrid_rerank"
     abstain_min_rerank_score: float = Field(default=0.05, ge=0.0, le=1.0)
 
+    session_ttl_hours: int = Field(default=8, ge=1, le=168)
+    session_cookie_secure: bool = True
+    db_pool_min_size: int = Field(default=1, ge=1)
+    db_pool_max_size: int = Field(default=10, ge=2)
+    max_concurrent_asks: int = Field(default=4, ge=1)
+    ask_queue_timeout_seconds: float = Field(default=5.0, gt=0)
+    question_max_chars: int = Field(default=1000, ge=10, le=10000)
+
     chunk_max_tokens: int = Field(default=350, gt=0)
     chunk_overlap_tokens: int = Field(default=50, ge=0)
     chunk_min_tokens: int = Field(default=60, ge=0)
@@ -92,6 +100,14 @@ class Settings(BaseSettings):
             raise ValueError("chunk_overlap_tokens must be >= 0 and < chunk_max_tokens")
         if not 0 <= self.chunk_min_tokens < self.chunk_max_tokens:
             raise ValueError("chunk_min_tokens must be >= 0 and < chunk_max_tokens")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_pool_limits(self) -> Settings:
+        if self.db_pool_min_size > self.db_pool_max_size:
+            raise ValueError("db_pool_min_size must be <= db_pool_max_size")
+        if self.max_concurrent_asks >= self.db_pool_max_size:
+            raise ValueError("max_concurrent_asks must be < db_pool_max_size")
         return self
 
     @model_validator(mode="after")

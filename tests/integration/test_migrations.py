@@ -61,4 +61,4 @@ def test_answer_audit_is_append_only(db_dsn: str) -> None:
         with pytest.raises(psycopg.Error, match="append-only"):
             conn.execute("DELETE FROM answer_audit")
         with pytest.raises(psycopg.Error, match="append-only"):
-            conn.execute("TRUNCATE answer_audit")
+            conn.execute("TRUNCATE answer_reviews, answer_audit")
