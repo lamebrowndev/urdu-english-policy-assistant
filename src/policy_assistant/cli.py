@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import getpass
 import hashlib
 import json
 import logging
@@ -14,6 +15,9 @@ from typing import Annotated, Any, cast
 import psycopg
 import typer
 
+from policy_assistant.answering.model import build_answer_model
+from policy_assistant.answering.service import AnswerResult
+from policy_assistant.answering.service import answer as run_answer
 from policy_assistant.config import Settings, find_repo_root, get_settings
 from policy_assistant.db.connection import connect, utc_now
 from policy_assistant.db.migrate import applied_checksums, migrate, pending_migrations
@@ -57,9 +61,11 @@ app = typer.Typer(no_args_is_help=True, add_completion=False, help="Urdu/English
 db_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Database commands.")
 corpus_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Corpus commands.")
 eval_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Evaluation commands.")
+audit_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Audit log commands.")
 app.add_typer(db_app, name="db")
 app.add_typer(corpus_app, name="corpus")
 app.add_typer(eval_app, name="eval")
+app.add_typer(audit_app, name="audit")
 
 
 def _configure_logging() -> None:
@@ -704,6 +710,157 @@ def eval_retrieval(
     _print_eval_table(report)
     report_path = _write_exclusive_report("retrieval-eval", report)
     typer.echo(f"report: {report_path}")
+
+
+def _print_answer(result: AnswerResult) -> None:
+    typer.echo(result.text)
+    if result.sources:
+        typer.echo("Sources:")
+        for source in result.sources:
+            heading = source.get("section_heading") or "-"
+            typer.echo(
+                f"[{source['number']}] {source['document_title']}, "
+                f"pages {source['page_start']}-{source['page_end']}, {heading}"
+            )
+            typer.echo(f"    {source['cited_text']}")
+    typer.echo(f"audit: {result.audit_id}")
+
+
+@app.command("ask")
+def ask_command(
+    question: Annotated[str, typer.Argument(help="Question in Urdu or English.")],
+    groups: Annotated[list[str], typer.Option("--group", help="Principal group (repeatable).")],
+    json_output: Annotated[bool, typer.Option("--json", help="Print JSON.")] = False,
+) -> None:
+    """Answer a question with citations and write an audit row."""
+    _configure_logging()
+    settings = get_settings()
+    try:
+        with closing(connect(settings.database_url)) as conn:
+            if not _index_is_complete(conn):
+                typer.echo("index incomplete: run upa ingest")
+                raise typer.Exit(code=1)
+            embedder = SentenceTransformerEmbedder(settings)
+            reranker = CrossEncoderReranker(settings)
+            model = build_answer_model(settings)
+            result = run_answer(
+                conn,
+                question,
+                Principal(frozenset(groups)),
+                actor=f"cli:{getpass.getuser()}",
+                embedder=embedder,
+                reranker=reranker,
+                model=model,
+                settings=settings,
+            )
+    except typer.Exit:
+        raise
+    except Exception as exc:
+        typer.secho(f"answer failed: {exc}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from exc
+    if json_output:
+        typer.echo(
+            json.dumps(
+                {
+                    "audit_id": result.audit_id,
+                    "outcome": result.outcome,
+                    "language": result.language,
+                    "text": result.text,
+                    "sources": list(result.sources),
+                    "flags": list(result.flags),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+    else:
+        _print_answer(result)
+
+
+@audit_app.command("list")
+def audit_list(
+    limit: Annotated[int, typer.Option("--limit", help="Maximum rows.")] = 20,
+    outcome: Annotated[str | None, typer.Option("--outcome", help="Filter by outcome.")] = None,
+) -> None:
+    """List recent audit rows."""
+    _configure_logging()
+    if limit < 1:
+        typer.secho("--limit must be at least 1", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    settings = get_settings()
+    try:
+        with closing(connect(settings.database_url)) as conn:
+            if outcome:
+                rows = conn.execute(
+                    """
+                    SELECT id, created_at, outcome, question_language, question
+                    FROM answer_audit
+                    WHERE outcome = %s
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    (outcome, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT id, created_at, outcome, question_language, question
+                    FROM answer_audit
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    (limit,),
+                ).fetchall()
+    except psycopg.Error as exc:
+        typer.secho(f"database unavailable: {exc}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from exc
+    for row in rows:
+        typer.echo(f"{row[0]}  {row[1].isoformat()}  {row[2]}  {row[3]}  {str(row[4])[:80]}")
+
+
+@audit_app.command("show")
+def audit_show(
+    audit_id: Annotated[str, typer.Argument(help="Audit row UUID.")],
+) -> None:
+    """Pretty-print one audit row as JSON."""
+    _configure_logging()
+    settings = get_settings()
+    try:
+        with closing(connect(settings.database_url)) as conn:
+            row = conn.execute(
+                """
+                SELECT id, created_at, actor, principal_groups, question,
+                       question_language, outcome, answer_text, answer, retrieval,
+                       llm, flags, prompt_version, pipeline_fingerprint, latency_ms
+                FROM answer_audit
+                WHERE id = %s
+                """,
+                (audit_id,),
+            ).fetchone()
+    except psycopg.Error as exc:
+        typer.secho(f"database unavailable: {exc}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from exc
+    if row is None:
+        typer.secho(f"audit row not found: {audit_id}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    payload = {
+        "id": str(row[0]),
+        "created_at": row[1].isoformat(),
+        "actor": row[2],
+        "principal_groups": row[3],
+        "question": row[4],
+        "question_language": row[5],
+        "outcome": row[6],
+        "answer_text": row[7],
+        "answer": row[8],
+        "retrieval": row[9],
+        "llm": row[10],
+        "flags": row[11],
+        "prompt_version": row[12],
+        "pipeline_fingerprint": row[13],
+        "latency_ms": row[14],
+    }
+    typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
