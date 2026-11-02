@@ -31,3 +31,13 @@ query prefix.
 - BM25-only mode remains available for debugging and ablations.
 - Retrieval quality on the real corpus is unmeasured until Phase 5; the seed
   dataset is a pipeline check, not a performance claim.
+
+## Addendum: safetensors revision
+
+The original bge-m3 revision contained only `pytorch_model.bin`, which made
+`transformers` start a background thread that downloaded a safetensors
+conversion from a Hub PR and called the Hub on every load. Both model
+revisions are now pinned to `9a0624b896d81da7492a910ffa53731274b6cf3d`, which
+contains `model.safetensors`; both constructors pass
+`model_kwargs={"use_safetensors": True}`. The pipeline fingerprint changes, so
+the next ingest re-embeds the corpus.

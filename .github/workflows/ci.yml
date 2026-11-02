@@ -35,6 +35,7 @@ jobs:
           required = {
               "policy_assistant/db/migrations/0001_init.sql",
               "policy_assistant/db/migrations/0002_retrieval_index.sql",
+              "policy_assistant/db/migrations/0003_answer_audit.sql",
               "policy_assistant/text/stopwords/en.txt",
               "policy_assistant/text/stopwords/ur.txt",
           }
