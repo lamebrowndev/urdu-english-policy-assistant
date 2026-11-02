@@ -74,3 +74,13 @@ def make_chunk(
         text=" ".join(sentences),
         sentences=sentences,
     )
+
+
+class ConstantReranker:
+    device = "cpu"
+
+    def __init__(self, value: float) -> None:
+        self.value = value
+
+    def score(self, query: str, passages: list[str]) -> list[float]:
+        return [self.value] * len(passages)

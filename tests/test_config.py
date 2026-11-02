@@ -50,3 +50,11 @@ def test_retrieval_limits_must_be_ordered() -> None:
         retrieve_candidates=8,
     )
     assert settings.rerank_candidates == 8
+
+
+def test_abstain_threshold_bounds() -> None:
+    with pytest.raises(ValidationError):
+        Settings(abstain_min_rerank_score=-0.1)
+    with pytest.raises(ValidationError):
+        Settings(abstain_min_rerank_score=1.1)
+    assert Settings(abstain_min_rerank_score=0.05).abstain_min_rerank_score == 0.05

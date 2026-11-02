@@ -125,3 +125,83 @@ def test_rate_limit_becomes_answer_model_error() -> None:
 def test_parse_reply_ignores_non_text_blocks() -> None:
     reply = parse_reply(_response())
     assert [segment.text for segment in reply.segments] == ["Employees get 20 working days."]
+
+
+def test_wire_request_through_real_sdk() -> None:
+    captured: list[httpx2.Request] = []
+    payload = {
+        "id": "msg_wire",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-test",
+        "content": [
+            {"type": "thinking", "thinking": "hidden", "signature": "sig"},
+            {
+                "type": "text",
+                "text": "Answer.",
+                "citations": [
+                    {
+                        "type": "content_block_location",
+                        "cited_text": "cited",
+                        "document_index": 0,
+                        "document_title": "Doc",
+                        "start_block_index": 0,
+                        "end_block_index": 1,
+                    }
+                ],
+            },
+        ],
+        "stop_reason": "end_turn",
+        "stop_sequence": None,
+        "usage": {"input_tokens": 10, "output_tokens": 5},
+    }
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        captured.append(request)
+        return httpx2.Response(
+            200,
+            headers={"request-id": "req_wire"},
+            json=payload,
+            request=request,
+        )
+
+    client = anthropic.Anthropic(
+        api_key="test-key",
+        max_retries=0,
+        http_client=httpx2.Client(transport=httpx2.MockTransport(handler)),
+    )
+    settings = Settings()
+    documents = [
+        {
+            "type": "document",
+            "source": {
+                "type": "content",
+                "content": [{"type": "text", "text": "body"}],
+            },
+            "title": "Doc",
+            "citations": {"enabled": True},
+        }
+    ]
+    reply = ClaudeAnswerModel(settings, client=client).generate("system", documents, "question")
+    assert len(captured) == 1
+    request = captured[0]
+    assert str(request.url) == "https://api.anthropic.com/v1/messages?beta=true"
+    assert "server-side-fallback-2026-07-01" in request.headers["anthropic-beta"]
+    import json
+
+    body = json.loads(request.content)
+    assert set(body) == {
+        "model",
+        "max_tokens",
+        "system",
+        "messages",
+        "output_config",
+        "fallbacks",
+    }
+    assert body["output_config"] == {"effort": "medium"}
+    assert body["messages"][0]["content"][-1] == {
+        "type": "text",
+        "text": "question",
+    }
+    assert reply.request_id == "req_wire"
+    assert len(reply.segments[0].citations) == 1

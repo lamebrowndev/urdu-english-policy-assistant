@@ -1,3 +1,5 @@
+import pytest
+
 from policy_assistant.answering.citations import resolve_answer
 from policy_assistant.answering.model import CitationRef, ReplySegment
 from tests.fakes import make_chunk
@@ -53,3 +55,44 @@ def test_all_invalid_citations_produce_no_sources() -> None:
     assert resolution.sources == ()
     assert resolution.text == "A"
     assert resolution.flags == ("invalid_citation",)
+
+
+@pytest.mark.parametrize(
+    ("document_index", "start_block_index", "end_block_index", "valid"),
+    [
+        (0, 0, 3, True),
+        (0, 1, 1, False),
+        (0, -1, 1, False),
+        (0, 0, 4, False),
+        (-1, 0, 1, False),
+        (2, 0, 1, False),
+    ],
+)
+def test_citation_validity(
+    document_index: int,
+    start_block_index: int,
+    end_block_index: int,
+    valid: bool,
+) -> None:
+    chunks = (
+        make_chunk(sentences=("s1", "s2", "s3")),
+        make_chunk(chunk_id=2, document_id="doc-b", sentences=("s4",)),
+    )
+    resolution = resolve_answer(
+        (
+            ReplySegment(
+                "x",
+                (
+                    CitationRef(
+                        document_index,
+                        start_block_index,
+                        end_block_index,
+                        "quote",
+                    ),
+                ),
+            ),
+        ),
+        chunks,
+    )
+    assert bool(resolution.sources) is valid
+    assert ("invalid_citation" in resolution.flags) is not valid

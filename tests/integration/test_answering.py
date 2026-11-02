@@ -5,6 +5,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import psycopg
 import pytest
 from typer.testing import CliRunner
 
@@ -21,8 +22,13 @@ from policy_assistant.config import Settings
 from policy_assistant.db.connection import connect
 from policy_assistant.ingest.manifest import Manifest
 from policy_assistant.ingest.pipeline import ingest
-from policy_assistant.retrieval.access import Principal
-from tests.fakes import HashingEmbedder, OverlapReranker, ScriptedAnswerModel
+from policy_assistant.retrieval.access import AccessViolation, Principal
+from tests.fakes import (
+    ConstantReranker,
+    HashingEmbedder,
+    OverlapReranker,
+    ScriptedAnswerModel,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -167,6 +173,15 @@ def test_indistinguishable_abstentions_and_no_finance_in_calls(
             payload = json.dumps(documents, ensure_ascii=False)
             assert "finance-approvals-en" not in payload
             assert "Finance Director" not in payload
+    with connect(db_dsn) as conn:
+        for audit_id in (finance.audit_id, absent.audit_id):
+            retrieval = conn.execute(
+                "SELECT retrieval FROM answer_audit WHERE id = %s", (audit_id,)
+            ).fetchone()[0]
+            assert all(
+                chunk["document_id"] in {"leave-policy-en", "leave-policy-ur"}
+                for chunk in retrieval["chunks"]
+            )
 
 
 @pytest.mark.parametrize(
@@ -246,6 +261,11 @@ def test_api_error_outcome(
     assert row is not None and row[0] == "error"
     assert row[1] == {"segments": [], "sources": [], "raw_text": ""}
     assert row[2]["request_id"] == "req_err"
+    assert row[2]["error"] == {
+        "type": "AnswerModelError",
+        "status_code": 500,
+        "message": "boom",
+    }
 
 
 def test_abstained_retrieval_makes_no_model_call(
@@ -439,3 +459,259 @@ def test_urdu_abstention_uses_urdu_message(
     assert result.language == "ur"
     assert result.outcome.startswith("abstained_")
     assert result.text == abstention_text("ur")
+
+
+class _TransactionProbeModel:
+    def __init__(self, conn: Any, reply: ModelReply) -> None:
+        self.conn = conn
+        self.reply = reply
+        self.status: Any = None
+
+    def generate(self, system: str, documents: list[dict[str, Any]], question: str) -> ModelReply:
+        self.status = self.conn.info.transaction_status
+        return self.reply
+
+
+class _RaisingModel:
+    def generate(self, system: str, documents: list[dict[str, Any]], question: str) -> ModelReply:
+        raise TypeError("Could not resolve authentication method")
+
+
+def test_model_called_without_open_transaction(
+    db_dsn: str,
+    sample_repo: Path,
+    sample_manifest: Manifest,
+    settings_for: Settings,
+    fake_counter: Callable[[str], int],
+    fake_embedder: HashingEmbedder,
+    fake_reranker: OverlapReranker,
+) -> None:
+    _ingest_sample(sample_manifest, sample_repo, settings_for, fake_counter, fake_embedder)
+    reply = _reply("Answer.", (CitationRef(0, 0, 1, "x"),))
+    with connect(db_dsn) as conn:
+        model = _TransactionProbeModel(conn, reply)
+        result = _ask(
+            conn,
+            "How many days of annual leave do employees get?",
+            model,  # type: ignore[arg-type]
+            settings_for,
+            fake_embedder,
+            fake_reranker,
+        )
+        count = conn.execute(
+            "SELECT count(*) FROM answer_audit WHERE id = %s", (result.audit_id,)
+        ).fetchone()[0]
+    assert model.status == psycopg.pq.TransactionStatus.IDLE
+    assert count == 1
+
+
+def test_unexpected_model_exception_is_audited_then_raised(
+    db_dsn: str,
+    sample_repo: Path,
+    sample_manifest: Manifest,
+    settings_for: Settings,
+    fake_counter: Callable[[str], int],
+    fake_embedder: HashingEmbedder,
+    fake_reranker: OverlapReranker,
+) -> None:
+    _ingest_sample(sample_manifest, sample_repo, settings_for, fake_counter, fake_embedder)
+    with (
+        connect(db_dsn) as conn,
+        pytest.raises(TypeError, match="Could not resolve authentication method"),
+    ):
+        _ask(
+            conn,
+            "How many days of annual leave do employees get?",
+            _RaisingModel(),  # type: ignore[arg-type]
+            settings_for,
+            fake_embedder,
+            fake_reranker,
+        )
+    with connect(db_dsn) as conn:
+        rows = conn.execute("SELECT outcome, flags, llm, answer FROM answer_audit").fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == "error"
+    assert "internal_error" in rows[0][1]
+    assert rows[0][2]["error"]["type"] == "TypeError"
+    assert rows[0][3] == {"segments": [], "sources": [], "raw_text": ""}
+
+
+def test_access_violation_is_audited_then_raised(
+    db_dsn: str,
+    sample_repo: Path,
+    sample_manifest: Manifest,
+    settings_for: Settings,
+    fake_counter: Callable[[str], int],
+    fake_embedder: HashingEmbedder,
+    fake_reranker: OverlapReranker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _ingest_sample(sample_manifest, sample_repo, settings_for, fake_counter, fake_embedder)
+    model = ScriptedAnswerModel(_reply("Answer.", (CitationRef(0, 0, 1, "x"),)))
+    monkeypatch.setattr(
+        "policy_assistant.answering.service.allowed_document_ids",
+        lambda conn, principal: [],
+    )
+    with connect(db_dsn) as conn, pytest.raises(AccessViolation):
+        _ask(
+            conn,
+            "How many days of annual leave do employees get?",
+            model,
+            settings_for,
+            fake_embedder,
+            fake_reranker,
+        )
+    with connect(db_dsn) as conn:
+        row = conn.execute("SELECT outcome, flags, llm, answer FROM answer_audit").fetchone()
+    assert row is not None
+    assert row[0] == "error"
+    assert "access_violation" in row[1]
+    assert row[2] is None
+    assert row[3] is None
+    assert model.calls == []
+
+
+@pytest.mark.parametrize(
+    ("stop_reason", "reply_text", "expected_text"),
+    [
+        ("refusal", "partial", "abstain"),
+        ("max_tokens", "partial", "error"),
+        ("end_turn", "NO_ANSWER", "abstain"),
+    ],
+)
+def test_non_answers_return_no_sources(
+    db_dsn: str,
+    sample_repo: Path,
+    sample_manifest: Manifest,
+    settings_for: Settings,
+    fake_counter: Callable[[str], int],
+    fake_embedder: HashingEmbedder,
+    fake_reranker: OverlapReranker,
+    stop_reason: str,
+    reply_text: str,
+    expected_text: str,
+) -> None:
+    _ingest_sample(sample_manifest, sample_repo, settings_for, fake_counter, fake_embedder)
+    reply = _reply(
+        reply_text,
+        (CitationRef(0, 0, 1, "quote"),),
+        stop_reason=stop_reason,
+    )
+    with connect(db_dsn) as conn:
+        result = _ask(
+            conn,
+            "How many days of annual leave do employees get?",
+            ScriptedAnswerModel(reply),
+            settings_for,
+            fake_embedder,
+            fake_reranker,
+        )
+        audit_answer = conn.execute(
+            "SELECT answer FROM answer_audit WHERE id = %s", (result.audit_id,)
+        ).fetchone()[0]
+    assert result.sources == ()
+    assert result.text == (
+        abstention_text("en") if expected_text == "abstain" else error_text("en")
+    )
+    assert audit_answer["sources"]
+
+
+def test_rerank_threshold_boundary(
+    db_dsn: str,
+    sample_repo: Path,
+    sample_manifest: Manifest,
+    settings_for: Settings,
+    fake_counter: Callable[[str], int],
+    fake_embedder: HashingEmbedder,
+) -> None:
+    _ingest_sample(sample_manifest, sample_repo, settings_for, fake_counter, fake_embedder)
+    reply = _reply("Answer.", (CitationRef(0, 0, 1, "x"),))
+    with connect(db_dsn) as conn:
+        below_model = ScriptedAnswerModel(reply)
+        below = _ask(
+            conn,
+            "How many days of annual leave do employees get?",
+            below_model,
+            settings_for,
+            fake_embedder,
+            ConstantReranker(0.049),
+        )
+        at_model = ScriptedAnswerModel(reply)
+        at_threshold = _ask(
+            conn,
+            "How many days of annual leave do employees get?",
+            at_model,
+            settings_for,
+            fake_embedder,
+            ConstantReranker(0.05),
+        )
+    assert below.outcome == "abstained_retrieval"
+    assert below_model.calls == []
+    assert at_threshold.outcome == "answered"
+    assert len(at_model.calls) == 1
+
+
+def test_cli_stale_pipeline_and_audit_input_validation(
+    db_dsn: str,
+    sample_repo: Path,
+    sample_manifest: Manifest,
+    settings_for: Settings,
+    fake_counter: Callable[[str], int],
+    fake_embedder: HashingEmbedder,
+) -> None:
+    _ingest_sample(sample_manifest, sample_repo, settings_for, fake_counter, fake_embedder)
+    with connect(db_dsn) as conn:
+        conn.execute("UPDATE documents SET pipeline_fingerprint = 'stale'")
+    env = {"UPA_DATABASE_URL": db_dsn}
+    stale = CliRunner().invoke(
+        app,
+        ["ask", "How many days of annual leave do employees get?", "--group", "all_staff"],
+        env=env,
+    )
+    assert stale.exit_code == 1
+    assert "index built with a different pipeline" in stale.output
+    invalid_id = CliRunner().invoke(app, ["audit", "show", "not-a-uuid"], env=env)
+    assert invalid_id.exit_code == 1
+    assert "invalid audit id: not-a-uuid" in invalid_id.output
+    bogus = CliRunner().invoke(app, ["audit", "list", "--outcome", "bogus"], env=env)
+    assert bogus.exit_code == 1
+    assert "unknown outcome: bogus" in bogus.output
+
+
+def test_cli_max_tokens_prints_no_sources(
+    db_dsn: str,
+    sample_repo: Path,
+    sample_manifest: Manifest,
+    settings_for: Settings,
+    fake_counter: Callable[[str], int],
+    fake_embedder: HashingEmbedder,
+    fake_reranker: OverlapReranker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _ingest_sample(sample_manifest, sample_repo, settings_for, fake_counter, fake_embedder)
+    reply = _reply(
+        "partial",
+        (CitationRef(0, 0, 1, "quote"),),
+        stop_reason="max_tokens",
+    )
+    model = ScriptedAnswerModel(reply)
+    monkeypatch.setattr(
+        "policy_assistant.cli.SentenceTransformerEmbedder",
+        lambda settings: fake_embedder,
+    )
+    monkeypatch.setattr(
+        "policy_assistant.cli.CrossEncoderReranker",
+        lambda settings: fake_reranker,
+    )
+    monkeypatch.setattr(
+        "policy_assistant.cli.build_answer_model",
+        lambda settings: model,
+    )
+    result = CliRunner().invoke(
+        app,
+        ["ask", "How many days of annual leave do employees get?", "--group", "all_staff"],
+        env={"UPA_DATABASE_URL": db_dsn},
+    )
+    assert result.exit_code == 0
+    assert error_text("en") in result.output
+    assert "Sources:" not in result.output
