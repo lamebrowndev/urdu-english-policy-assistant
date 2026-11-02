@@ -27,6 +27,7 @@ from policy_assistant.answering.prompts import (
 from policy_assistant.config import Settings
 from policy_assistant.ingest.pipeline import pipeline_fingerprint
 from policy_assistant.retrieval.access import (
+    AccessViolation,
     Principal,
     allowed_document_ids,
     ensure_authorized,
@@ -59,6 +60,7 @@ def _llm_payload(
     reply: ModelReply | None,
     *,
     request_id: str | None = None,
+    error: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "model_requested": settings.llm_model,
@@ -73,6 +75,7 @@ def _llm_payload(
         "unsupported_citation_types": (
             list(reply.unsupported_citation_types) if reply is not None else []
         ),
+        "error": error,
     }
 
 
@@ -148,7 +151,16 @@ def answer(
     model: AnswerModel,
     settings: Settings,
 ) -> AnswerResult:
-    """Answer a question and write exactly one audit row."""
+    """Answer a question and write exactly one audit row.
+
+    Once ``retrieve()`` has returned, this function writes exactly one
+    ``answer_audit`` row before it returns or raises. Failures before that
+    point (database unavailable, model loading, retrieval errors) raise with
+    no row.
+
+    This function manages its own transactions. Callers must not call it
+    inside a ``conn.transaction()`` block.
+    """
     started = time.perf_counter()
     language = answer_language(question)
     retrieval = retrieve(
@@ -172,30 +184,81 @@ def answer(
     answer_payload: dict[str, Any] | None = None
     llm_payload: dict[str, Any] | None = None
     llm_ms = 0.0
+    reraise: Exception | None = None
+
+    def latency() -> dict[str, float]:
+        values = dict(retrieval.timings_ms)
+        values["llm"] = llm_ms
+        values["total"] = (time.perf_counter() - started) * 1000.0
+        return values
 
     if gate:
         outcome = "abstained_retrieval"
         text = abstention_text(language)
     else:
         allowed = allowed_document_ids(conn, principal)
-        ensure_authorized(
-            [chunk.document_id for chunk in retrieval.chunks],
-            allowed,
-        )
+        try:
+            ensure_authorized(
+                [chunk.document_id for chunk in retrieval.chunks],
+                allowed,
+            )
+        except AccessViolation:
+            _insert_audit(
+                conn,
+                actor=actor,
+                principal=principal,
+                question=question,
+                language=language,
+                outcome="error",
+                answer_text=error_text(language),
+                answer_payload=None,
+                retrieval=retrieval,
+                llm_payload=None,
+                flags=["access_violation"],
+                settings=settings,
+                latency_ms=latency(),
+            )
+            raise
+
         documents = build_documents(retrieval.chunks)
         llm_started = time.perf_counter()
         try:
             reply = model.generate(system_prompt(language), documents, question)
+            resolution = resolve_answer(reply.segments, retrieval.chunks)
         except AnswerModelError as exc:
             llm_ms = (time.perf_counter() - llm_started) * 1000.0
             outcome = "error"
             flags.append("api_error")
             text = error_text(language)
             answer_payload = {"segments": [], "sources": [], "raw_text": ""}
-            llm_payload = _llm_payload(settings, None, request_id=exc.request_id)
+            llm_payload = _llm_payload(
+                settings,
+                None,
+                request_id=exc.request_id,
+                error={
+                    "type": type(exc.__cause__ or exc).__name__,
+                    "status_code": exc.status_code,
+                    "message": str(exc)[:1000],
+                },
+            )
+        except Exception as exc:
+            llm_ms = (time.perf_counter() - llm_started) * 1000.0
+            outcome = "error"
+            flags.append("internal_error")
+            text = error_text(language)
+            answer_payload = {"segments": [], "sources": [], "raw_text": ""}
+            llm_payload = _llm_payload(
+                settings,
+                None,
+                error={
+                    "type": type(exc).__name__,
+                    "status_code": None,
+                    "message": str(exc)[:1000],
+                },
+            )
+            reraise = exc
         else:
             llm_ms = (time.perf_counter() - llm_started) * 1000.0
-            resolution = resolve_answer(reply.segments, retrieval.chunks)
             raw_text = "".join(segment.text for segment in reply.segments)
             flags.extend(resolution.flags)
             if reply.unsupported_citation_types:
@@ -217,11 +280,8 @@ def answer(
                 outcome = "answered"
                 text = resolution.text
             answer_payload = _answer_payload(reply, resolution, raw_text)
-            llm_payload = _llm_payload(settings, reply)
+            llm_payload = _llm_payload(settings, reply, error=None)
 
-    latency_ms = dict(retrieval.timings_ms)
-    latency_ms["llm"] = llm_ms
-    latency_ms["total"] = (time.perf_counter() - started) * 1000.0
     audit_id = _insert_audit(
         conn,
         actor=actor,
@@ -235,9 +295,13 @@ def answer(
         llm_payload=llm_payload,
         flags=flags,
         settings=settings,
-        latency_ms=latency_ms,
+        latency_ms=latency(),
     )
-    sources = tuple(source for source in (answer_payload or {}).get("sources", []))
+    if reraise is not None:
+        raise reraise
+    sources: tuple[dict[str, Any], ...] = ()
+    if outcome == "answered" and answer_payload is not None:
+        sources = tuple(answer_payload.get("sources", []))
     return AnswerResult(
         audit_id=audit_id,
         outcome=outcome,

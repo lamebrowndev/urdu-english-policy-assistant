@@ -156,6 +156,12 @@ class ClaudeAnswerModel:
                 status_code=None,
                 request_id=getattr(exc, "request_id", None),
             ) from exc
+        except anthropic.APIError as exc:
+            raise AnswerModelError(
+                str(exc),
+                status_code=getattr(exc, "status_code", None),
+                request_id=getattr(exc, "request_id", None),
+            ) from exc
         return parse_reply(response)
 
 
