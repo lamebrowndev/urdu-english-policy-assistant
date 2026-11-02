@@ -17,6 +17,7 @@ from typing import Annotated, Any, cast, get_args
 import psycopg
 import typer
 
+from policy_assistant.answering.audit_store import load_audit_row
 from policy_assistant.answering.model import build_answer_model
 from policy_assistant.answering.service import AnswerOutcome, AnswerResult
 from policy_assistant.answering.service import answer as run_answer
@@ -57,6 +58,7 @@ from policy_assistant.retrieval.models import (
     CrossEncoderReranker,
     SentenceTransformerEmbedder,
 )
+from policy_assistant.retrieval.readiness import index_problem
 from policy_assistant.retrieval.retriever import (
     RetrievalMode,
     RetrievalResult,
@@ -514,34 +516,6 @@ def stats_command() -> None:
     typer.echo(f"chunks missing bm25 data: {missing_bm25[0] if missing_bm25 else 0}")
 
 
-def _index_problem(conn: psycopg.Connection[Any], settings: Settings) -> str | None:
-    row = conn.execute(
-        """
-        SELECT count(*) FROM chunks c
-        WHERE c.embedding IS NULL
-           OR c.bm25_length IS NULL
-           OR c.bm25_length <> COALESCE(
-               (SELECT sum(tf) FROM chunk_terms ct WHERE ct.chunk_id = c.id),
-               0
-           )
-        """
-    ).fetchone()
-    if row is not None and int(row[0]) > 0:
-        return "index incomplete: run upa ingest"
-    stale = conn.execute(
-        """
-        SELECT EXISTS (
-            SELECT 1 FROM documents
-            WHERE pipeline_fingerprint IS DISTINCT FROM %s
-        )
-        """,
-        (pipeline_fingerprint(settings),),
-    ).fetchone()
-    if stale is not None and bool(stale[0]):
-        return "index built with a different pipeline: run upa ingest"
-    return None
-
-
 def _print_retrieval_result(result: RetrievalResult) -> None:
     typer.echo(f"mode: {result.mode}")
     typer.echo(f"allowed documents: {result.allowed_document_count}")
@@ -591,7 +565,7 @@ def retrieve_command(
     settings = get_settings()
     try:
         with closing(connect(settings.database_url)) as conn:
-            problem = _index_problem(conn, settings)
+            problem = index_problem(conn, settings)
             if problem is not None:
                 typer.echo(problem)
                 raise typer.Exit(code=1)
@@ -702,7 +676,7 @@ def eval_retrieval(
     try:
         items = load_dataset(dataset)
         with closing(connect(settings.database_url)) as conn:
-            problem = _index_problem(conn, settings)
+            problem = index_problem(conn, settings)
             if problem is not None:
                 typer.echo(problem)
                 raise typer.Exit(code=1)
@@ -763,7 +737,7 @@ def ask_command(
     settings = get_settings()
     try:
         with closing(connect(settings.database_url)) as conn:
-            problem = _index_problem(conn, settings)
+            problem = index_problem(conn, settings)
             if problem is not None:
                 typer.echo(problem)
                 raise typer.Exit(code=1)
@@ -862,39 +836,13 @@ def audit_show(
     settings = get_settings()
     try:
         with closing(connect(settings.database_url)) as conn:
-            row = conn.execute(
-                """
-                SELECT id, created_at, actor, principal_groups, question,
-                       question_language, outcome, answer_text, answer, retrieval,
-                       llm, flags, prompt_version, pipeline_fingerprint, latency_ms
-                FROM answer_audit
-                WHERE id = %s
-                """,
-                (audit_uuid,),
-            ).fetchone()
+            payload = load_audit_row(conn, audit_uuid)
     except psycopg.Error as exc:
         typer.secho(f"database unavailable: {exc}", err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1) from exc
-    if row is None:
+    if payload is None:
         typer.secho(f"audit row not found: {audit_id}", err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1)
-    payload = {
-        "id": str(row[0]),
-        "created_at": row[1].isoformat(),
-        "actor": row[2],
-        "principal_groups": row[3],
-        "question": row[4],
-        "question_language": row[5],
-        "outcome": row[6],
-        "answer_text": row[7],
-        "answer": row[8],
-        "retrieval": row[9],
-        "llm": row[10],
-        "flags": row[11],
-        "prompt_version": row[12],
-        "pipeline_fingerprint": row[13],
-        "latency_ms": row[14],
-    }
     typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
