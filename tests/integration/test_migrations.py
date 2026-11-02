@@ -62,3 +62,41 @@ def test_answer_audit_is_append_only(db_dsn: str) -> None:
             conn.execute("DELETE FROM answer_audit")
         with pytest.raises(psycopg.Error, match="append-only"):
             conn.execute("TRUNCATE answer_reviews, answer_audit")
+
+
+def test_answer_reviews_is_append_only(db_dsn: str) -> None:
+    with connect(db_dsn, autocommit=True) as conn:
+        user_id = conn.execute(
+            """
+            INSERT INTO users (username, display_name, password_hash, role)
+            VALUES ('reviewer1', 'Reviewer', 'x', 'reviewer')
+            RETURNING id
+            """
+        ).fetchone()[0]
+        audit_id = conn.execute(
+            """
+            INSERT INTO answer_audit (
+                actor, principal_groups, question, question_language, outcome,
+                answer_text, retrieval, prompt_version, pipeline_fingerprint,
+                latency_ms
+            ) VALUES (
+                'user:test', ARRAY['all_staff'], 'question', 'en', 'answered',
+                'text', '{}'::jsonb, 'answer-v1', 'fingerprint', '{}'::jsonb
+            )
+            RETURNING id
+            """
+        ).fetchone()[0]
+        conn.execute(
+            """
+            INSERT INTO answer_reviews (
+                audit_id, reviewer_id, reviewer_username, verdict, citation_ok
+            ) VALUES (%s, %s, 'reviewer1', 'correct', true)
+            """,
+            (audit_id, user_id),
+        )
+        with pytest.raises(psycopg.Error, match="answer_reviews is append-only"):
+            conn.execute("UPDATE answer_reviews SET notes = 'changed'")
+        with pytest.raises(psycopg.Error, match="answer_reviews is append-only"):
+            conn.execute("DELETE FROM answer_reviews")
+        with pytest.raises(psycopg.Error, match="answer_reviews is append-only"):
+            conn.execute("TRUNCATE answer_reviews")
