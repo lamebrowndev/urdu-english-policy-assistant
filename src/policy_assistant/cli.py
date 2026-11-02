@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
 import time
 from contextlib import closing
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
 import psycopg
 import typer
@@ -22,6 +23,7 @@ from policy_assistant.ingest.manifest import DocumentSpec, Manifest, ManifestErr
 from policy_assistant.ingest.pipeline import (
     IngestError,
     IngestReport,
+    pipeline_fingerprint,
 )
 from policy_assistant.ingest.pipeline import (
     ingest as run_ingest,
@@ -32,15 +34,32 @@ from policy_assistant.ingest.quality import (
     assess_document,
 )
 from policy_assistant.ingest.tokens import load_bge_m3_counter
-from policy_assistant.retrieval.models import SentenceTransformerEmbedder
+from policy_assistant.retrieval.access import AccessViolation, Principal
+from policy_assistant.retrieval.evaluation import (
+    EvaluationError,
+    evaluate,
+    load_dataset,
+)
+from policy_assistant.retrieval.models import (
+    CrossEncoderReranker,
+    SentenceTransformerEmbedder,
+)
+from policy_assistant.retrieval.retriever import (
+    RetrievalMode,
+    RetrievalResult,
+    retrieve,
+    with_top_k,
+)
 
 LOGGER = logging.getLogger(__name__)
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, help="Urdu/English policy assistant.")
 db_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Database commands.")
 corpus_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Corpus commands.")
+eval_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Evaluation commands.")
 app.add_typer(db_app, name="db")
 app.add_typer(corpus_app, name="corpus")
+app.add_typer(eval_app, name="eval")
 
 
 def _configure_logging() -> None:
@@ -476,6 +495,215 @@ def stats_command() -> None:
     )
     typer.echo(f"chunks missing embedding: {missing_embeddings[0] if missing_embeddings else 0}")
     typer.echo(f"chunks missing bm25 data: {missing_bm25[0] if missing_bm25 else 0}")
+
+
+def _index_is_complete(conn: psycopg.Connection[Any]) -> bool:
+    row = conn.execute(
+        """
+        SELECT count(*) FROM chunks c
+        WHERE c.embedding IS NULL
+           OR c.bm25_length IS NULL
+           OR c.bm25_length <> COALESCE(
+               (SELECT sum(tf) FROM chunk_terms ct WHERE ct.chunk_id = c.id),
+               0
+           )
+        """
+    ).fetchone()
+    return row is not None and int(row[0]) == 0
+
+
+def _print_retrieval_result(result: RetrievalResult) -> None:
+    typer.echo(f"mode: {result.mode}")
+    typer.echo(f"allowed documents: {result.allowed_document_count}")
+    typer.echo(f"query terms: {' '.join(result.query_terms)}")
+    if not result.chunks:
+        typer.echo("no results")
+        return
+    for rank, chunk in enumerate(result.chunks, start=1):
+        scores: list[str] = []
+        if chunk.bm25_rank is not None:
+            scores.append(f"bm25_rank={chunk.bm25_rank}")
+            scores.append(f"bm25={chunk.bm25_score:.6f}")
+        if chunk.dense_rank is not None:
+            scores.append(f"dense_rank={chunk.dense_rank}")
+            scores.append(f"distance={chunk.dense_distance:.6f}")
+        if chunk.rrf_score is not None:
+            scores.append(f"rrf={chunk.rrf_score:.6f}")
+        if chunk.rerank_score is not None:
+            scores.append(f"rerank={chunk.rerank_score:.6f}")
+        heading = chunk.section_heading or "-"
+        typer.echo(
+            f"{rank:>3}  {chunk.document_id}  pages {chunk.page_start}-{chunk.page_end}  "
+            f"{heading}  {' '.join(scores)}"
+        )
+        typer.echo(f"     {chunk.text[:120].replace(chr(10), ' ')}")
+    typer.echo(
+        "timings_ms: "
+        + " ".join(f"{stage}={value:.2f}" for stage, value in result.timings_ms.items())
+    )
+
+
+@app.command("retrieve")
+def retrieve_command(
+    question: Annotated[str, typer.Argument(help="Question in Urdu or English.")],
+    groups: Annotated[list[str], typer.Option("--group", help="Principal group (repeatable).")],
+    mode: Annotated[
+        RetrievalMode, typer.Option("--mode", help="bm25, dense, hybrid, or hybrid_rerank.")
+    ] = "hybrid_rerank",
+    k: Annotated[int, typer.Option("--k", help="Number of chunks to return.")] = 8,
+    json_output: Annotated[bool, typer.Option("--json", help="Print JSON.")] = False,
+) -> None:
+    """Retrieve policy chunks for a question under a principal's groups."""
+    _configure_logging()
+    if k < 1:
+        typer.secho("--k must be at least 1", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    settings = get_settings()
+    try:
+        with closing(connect(settings.database_url)) as conn:
+            if not _index_is_complete(conn):
+                typer.echo("index incomplete: run upa ingest")
+                raise typer.Exit(code=1)
+            embedder = SentenceTransformerEmbedder(settings)
+            reranker = CrossEncoderReranker(settings)
+            LOGGER.info(
+                "embedding device: %s; reranker device: %s",
+                embedder.device,
+                reranker.device,
+            )
+            result = retrieve(
+                conn,
+                question,
+                Principal(frozenset(groups)),
+                mode=mode,
+                embedder=embedder,
+                reranker=reranker,
+                settings=with_top_k(settings, k),
+            )
+    except (psycopg.Error, AccessViolation) as exc:
+        typer.secho(f"retrieval failed: {exc}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from exc
+    if json_output:
+        typer.echo(json.dumps(result.as_dict(), ensure_ascii=False, indent=2))
+    else:
+        _print_retrieval_result(result)
+
+
+def _write_exclusive_report(prefix: str, payload: dict[str, Any]) -> Path:
+    settings = get_settings()
+    reports_dir = settings.data_dir / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    stamp = utc_now().strftime("%Y%m%dT%H%M%S%fZ")
+    content = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    path = reports_dir / f"{prefix}-{stamp}.json"
+    suffix = 0
+    while True:
+        try:
+            with path.open("x", encoding="utf-8") as handle:
+                handle.write(content)
+            return path
+        except FileExistsError:
+            suffix += 1
+            path = reports_dir / f"{prefix}-{stamp}-{suffix}.json"
+
+
+def _format_metric(value: float | None) -> str:
+    return "-" if value is None else f"{value:.4f}"
+
+
+def _print_eval_table(report: dict[str, Any]) -> None:
+    typer.echo(
+        "mode            slice                 n   n_gold  hit@k    recall@k  MRR@k    leaks"
+    )
+    for mode, mode_report in report["modes"].items():
+        slices: list[tuple[str, dict[str, Any]]] = [
+            ("overall", mode_report["overall"]),
+            ("language:en", mode_report["slices"]["language"].get("en", {"n": 0})),
+            ("language:ur", mode_report["slices"]["language"].get("ur", {"n": 0})),
+            (
+                "cross_lingual:true",
+                mode_report["slices"]["cross_lingual"]["true"],
+            ),
+            (
+                "cross_lingual:false",
+                mode_report["slices"]["cross_lingual"]["false"],
+            ),
+        ]
+        for label, summary in slices:
+            if summary["n"] == 0:
+                continue
+            typer.echo(
+                f"{mode:<15} {label:<21} {summary['n']:>3}  "
+                f"{summary['n_with_gold']:>6}  "
+                f"{_format_metric(summary['hit_at_k']):<8} "
+                f"{_format_metric(summary['recall_at_k']):<9} "
+                f"{_format_metric(summary['mrr_at_k']):<8} "
+                f"{summary['leaks']:>5}"
+            )
+    for mode, mode_report in report["modes"].items():
+        for stage, values in mode_report["overall"]["latency_ms"].items():
+            typer.echo(f"latency {mode} {stage}: mean={values['mean']} p95={values['p95']}")
+
+
+@eval_app.command("retrieval")
+def eval_retrieval(
+    dataset: Annotated[Path, typer.Option("--dataset", help="JSONL dataset path.")],
+    modes: Annotated[
+        str,
+        typer.Option("--modes", help="Comma-separated modes."),
+    ] = "bm25,dense,hybrid,hybrid_rerank",
+    k: Annotated[int, typer.Option("--k", help="Cutoff for metrics.")] = 10,
+) -> None:
+    """Evaluate retrieval modes on a JSONL dataset."""
+    _configure_logging()
+    requested_modes = [part.strip() for part in modes.split(",") if part.strip()]
+    allowed_modes = {"bm25", "dense", "hybrid", "hybrid_rerank"}
+    invalid = sorted(set(requested_modes) - allowed_modes)
+    if invalid or not requested_modes or k < 1:
+        typer.secho(
+            f"invalid modes {invalid or modes!r} or k={k}",
+            err=True,
+            fg=typer.colors.RED,
+        )
+        raise typer.Exit(code=1)
+    typed_modes: list[RetrievalMode] = [cast(RetrievalMode, mode) for mode in requested_modes]
+    settings = get_settings()
+    try:
+        items = load_dataset(dataset)
+        with closing(connect(settings.database_url)) as conn:
+            if not _index_is_complete(conn):
+                typer.echo("index incomplete: run upa ingest")
+                raise typer.Exit(code=1)
+            embedder = SentenceTransformerEmbedder(settings)
+            reranker = CrossEncoderReranker(settings)
+            report = evaluate(
+                conn,
+                items,
+                modes=typed_modes,
+                k=k,
+                embedder=embedder,
+                reranker=reranker,
+                settings=settings,
+            )
+    except (EvaluationError, psycopg.Error, AccessViolation) as exc:
+        typer.secho(f"evaluation failed: {exc}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from exc
+
+    report["generated_at"] = utc_now().isoformat()
+    report["dataset"] = {
+        "path": str(dataset),
+        "sha256": hashlib.sha256(dataset.read_bytes()).hexdigest(),
+    }
+    report["pipeline_fingerprint"] = pipeline_fingerprint(settings)
+    report["models"] = {
+        "embedding_repo": settings.embedding_repo,
+        "embedding_revision": settings.embedding_revision,
+        "reranker_repo": settings.reranker_repo,
+        "reranker_revision": settings.reranker_revision,
+    }
+    _print_eval_table(report)
+    report_path = _write_exclusive_report("retrieval-eval", report)
+    typer.echo(f"report: {report_path}")
 
 
 if __name__ == "__main__":

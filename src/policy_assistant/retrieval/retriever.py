@@ -26,6 +26,19 @@ RetrievalMode = Literal["bm25", "dense", "hybrid", "hybrid_rerank"]
 _MODES = {"bm25", "dense", "hybrid", "hybrid_rerank"}
 
 
+def with_top_k(settings: Settings, k: int) -> Settings:
+    """Return settings whose final top-k and candidate depths fit ``k``."""
+    rerank_candidates = max(k, settings.rerank_candidates)
+    retrieve_candidates = max(k, rerank_candidates, settings.retrieve_candidates)
+    return settings.model_copy(
+        update={
+            "retrieve_top_k": k,
+            "rerank_candidates": rerank_candidates,
+            "retrieve_candidates": retrieve_candidates,
+        }
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class RetrievedChunk:
     chunk_id: int
