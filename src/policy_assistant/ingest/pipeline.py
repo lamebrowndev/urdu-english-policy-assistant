@@ -200,7 +200,7 @@ def _write_report(
     reports_dir = data_dir / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
     generated_at = utc_now()
-    path = reports_dir / f"ingest-{generated_at.strftime('%Y%m%dT%H%M%SZ')}.json"
+    stem = f"ingest-{generated_at.strftime('%Y%m%dT%H%M%S%fZ')}"
     payload = {
         "generated_at": generated_at.isoformat(),
         "pipeline_version": PIPELINE_VERSION,
@@ -224,8 +224,17 @@ def _write_report(
             "errors": sum(1 for result in results if result.status == "error"),
         },
     }
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return path
+    content = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    path = reports_dir / f"{stem}.json"
+    suffix = 0
+    while True:
+        try:
+            with path.open("x", encoding="utf-8") as handle:
+                handle.write(content)
+            return path
+        except FileExistsError:
+            suffix += 1
+            path = reports_dir / f"{stem}-{suffix}.json"
 
 
 def ingest(

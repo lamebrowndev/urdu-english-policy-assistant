@@ -246,11 +246,10 @@ def corpus_inspect(
 
     assessed, errors = _assess_documents(manifest, settings, document_ids)
     generated_at = utc_now()
-    timestamp = generated_at.strftime("%Y%m%dT%H%M%SZ")
+    stem = f"inspect-{generated_at.strftime('%Y%m%dT%H%M%S%fZ')}"
     reports_dir = settings.data_dir / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
-    report_path = reports_dir / f"inspect-{timestamp}.json"
-    dump_dir = reports_dir / f"inspect-{timestamp}"
+    dumped_pages: list[tuple[str, int, str]] = []
 
     report_documents: list[dict[str, Any]] = []
     quarantined = 0
@@ -293,13 +292,12 @@ def corpus_inspect(
             }
         )
         if dump_text:
-            document_dir = dump_dir / document.id
             included_seen = 0
             for number, page in enumerate(assessment.pages, start=1):
                 if page.flags:
-                    _dump_page(document_dir, number, page.text)
+                    dumped_pages.append((document.id, number, page.text))
                 elif included_seen < 2:
-                    _dump_page(document_dir, number, page.text)
+                    dumped_pages.append((document.id, number, page.text))
                     included_seen += 1
 
     report = {
@@ -308,10 +306,25 @@ def corpus_inspect(
         "documents": report_documents,
         "errors": [{"id": document_id, "message": message} for document_id, message in errors],
     }
-    report_path.write_text(
-        json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    content = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
+    suffix = 0
+    while True:
+        candidate_stem = stem if suffix == 0 else f"{stem}-{suffix}"
+        report_path = reports_dir / f"{candidate_stem}.json"
+        dump_dir = reports_dir / candidate_stem
+        if dump_text and dump_dir.exists():
+            suffix += 1
+            continue
+        try:
+            with report_path.open("x", encoding="utf-8") as handle:
+                handle.write(content)
+            break
+        except FileExistsError:
+            suffix += 1
     typer.echo(f"report: {report_path}")
+    if dump_text:
+        for document_id, number, text in dumped_pages:
+            _dump_page(dump_dir / document_id, number, text)
     for document_id, message in errors:
         typer.secho(f"{document_id}: error: {message}", err=True, fg=typer.colors.RED)
     if errors or quarantined:
