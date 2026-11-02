@@ -42,7 +42,7 @@ src = ["src", "tests"]
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "SIM", "DTZ", "RUF"]
 # Urdu/Arabic glyphs that the confusables table mistakes for ASCII.
-allowed-confusables = ["ا", "۔", "’", "“", "”"]
+allowed-confusables = ["ا", "۔", "’", "“", "”", "۰", "۱", "۲", "۳", "۴", "۵", "۶", "۷", "۸", "۹"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["policy_assistant"]

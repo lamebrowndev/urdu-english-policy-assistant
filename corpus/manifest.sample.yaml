@@ -1,0 +1,46 @@
+version: 1
+
+groups:
+  - id: all_staff
+    description: Every employee of the Trust.
+  - id: hr
+    description: Human Resources staff.
+  - id: finance
+    description: Finance and accounts staff.
+
+documents:
+  - id: leave-policy-en
+    title: Leave Policy (English)
+    language: en
+    file_type: txt
+    path: corpus/samples/leave-policy-en.txt
+    source_url: null
+    sha256: c75dca0d079a18e02986b8ed8f3f4bfe00cf543b7d1797fb6894916b2b73fd2a
+    acl:
+      - all_staff
+    translation_of: null
+    license_note: Fictional sample written for this project.
+
+  - id: leave-policy-ur
+    title: چھٹیوں کی پالیسی (اردو)
+    language: ur
+    file_type: txt
+    path: corpus/samples/leave-policy-ur.txt
+    source_url: null
+    sha256: 97469a1788a4e5deb06c434a79438c928052cc6dcfec029fa8100a2b3c56d40d
+    acl:
+      - all_staff
+    translation_of: leave-policy-en
+    license_note: Fictional sample written for this project.
+
+  - id: finance-approvals-en
+    title: Finance Approval Limits (English)
+    language: en
+    file_type: txt
+    path: corpus/samples/finance-approvals-en.txt
+    source_url: null
+    sha256: bbca652d02b4bcf61c9a93d6e498c2bb266cd99e7f3d676f1bd8af1e9cbb329d
+    acl:
+      - finance
+    translation_of: null
+    license_note: Fictional sample written for this project.

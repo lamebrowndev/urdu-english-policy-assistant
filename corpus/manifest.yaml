@@ -1,0 +1,30 @@
+version: 1
+
+groups:
+  - id: all_staff
+    description: Every employee of the organisation.
+  - id: hr
+    description: Human Resources staff.
+  - id: finance
+    description: Finance and accounts staff.
+  - id: executives
+    description: Senior leadership and executives.
+
+documents: []
+
+# Example document entry. Uncomment and edit to ingest a real document.
+# Third-party files are never committed: keep the file under data/raw (ignored)
+# or provide a source_url and pin the sha256 after the first fetch.
+#
+#  - id: staff-handbook-en
+#    title: Staff Handbook (English)
+#    language: en
+#    file_type: pdf
+#    path: null                      # default: data/raw/staff-handbook-en.pdf
+#    source_url: https://example.org/handbook.pdf
+#    sha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+#    acl:
+#      - all_staff
+#      - hr
+#    translation_of: null
+#    license_note: Published by Example Organisation; redistributed with permission.
