@@ -1,191 +1,219 @@
 # Urdu–English Policy Assistant
 
-A bilingual Urdu/English policy assistant whose answers must cite exact source
-sentences, use only documents the asking user may see, and log every answer for
-human review. Phases 1–3 built ingestion, hybrid retrieval, cited answers, and
-an append-only audit log. Phase 4 adds accounts, server-side sessions, an
-authenticated API, reviewer workflow, and a server-rendered web UI.
+[![CI](https://github.com/lamebrowndev/urdu-english-policy-assistant/actions/workflows/ci.yml/badge.svg)](https://github.com/lamebrowndev/urdu-english-policy-assistant/actions/workflows/ci.yml)
 
-## Status
+A bilingual Urdu/English assistant for an organisation's policies. Every answer
+cites the exact source sentences, uses only the documents the asking user is
+allowed to read, and is written to an append-only audit log that reviewers
+score in the same web UI used for evaluation.
 
-Phases 1–4 complete; next: evaluation. No answer-accuracy numbers appear here
-yet, because none have been measured on the real corpus. The seed retrieval
-dataset is a pipeline check, not a performance result.
+> **Status.** The system is built end to end, through the evaluation harness.
+> **No accuracy number is claimed yet.** The headline metric, human-scored
+> accuracy on a frozen 200-question Urdu/English test set, needs the real
+> policy corpus and human reviews; the protocol is in
+> [docs/EVALUATION.md](docs/EVALUATION.md). The bundled sample corpus is
+> fictional.
 
-The sample corpus is fictional. The project does not redistribute third-party
-documents: real manifests store a source URL and a pinned SHA-256, and fetched
-files stay under `data/` (git-ignored).
+## What it does
+
+- **Hybrid retrieval in one PostgreSQL.** BM25 computed in SQL over an
+  Urdu-normalized inverted index, bge-m3 vectors in pgvector (HNSW), reciprocal
+  rank fusion, and a bge-reranker-v2-m3 cross-encoder. An Urdu question can find
+  an English policy.
+- **Sentence-exact citations.** Each retrieved chunk goes to Claude as a
+  custom-content document with one block per sentence, so every citation maps to
+  stored sentences. No valid citation, no answer.
+- **Document-level permissions.** Default-deny ACLs are applied inside both
+  retrieval queries and re-checked before the model call. Restricted and missing
+  topics get byte-identical replies, so a refusal never reveals that a
+  restricted document exists.
+- **Append-only audit log.** Once retrieval has run, every question writes
+  exactly one row: the question, the principal, the exact chunks and sentences
+  sent, the model, request id, usage, and outcome, including failures.
+  Database triggers reject UPDATE, DELETE, and TRUNCATE.
+- **Human review and evaluation.** Reviewers only see answers whose sources they
+  may read. The same review screen scores evaluation runs over frozen test sets,
+  with Wilson 95% intervals by language, category, and question type.
+- **Bilingual web UI.** Server-rendered and usable without JavaScript, with a
+  strict CSP (no inline code), CSRF tokens plus same-origin checks, per-block
+  `lang`/`dir`, and a self-hosted Noto Nastaliq Urdu font.
+- **Fail-closed Urdu PDF ingestion.** Pages whose text layer is broken (private-use
+  glyphs, wrong script, reversed text, low dictionary hit rate) are quarantined,
+  never indexed.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph ingest["upa ingest"]
+        M["manifest + pinned SHA-256"] --> X["extract pages"] --> Q{"quality gate"}
+        Q -->|pass| C["heading-aware chunks"] --> E["bge-m3 vectors + BM25 terms"]
+        Q -->|fail| QR["quarantine"]
+    end
+    E --> PG[("PostgreSQL 17 + pgvector")]
+    B["Browser: user or reviewer"] -->|"session cookie + CSRF"| W["FastAPI: HTML and JSON"]
+    W --> A["answer()"]
+    A --> R["retrieve(): ACL-filtered BM25 + HNSW, RRF, reranker"]
+    R --> PG
+    A -->|"authorized chunks, one block per sentence"| CL["Claude API with Citations"]
+    A -->|"exactly one row"| AU[("answer_audit, append-only")]
+    W -->|"verdicts"| RV[("answer_reviews, append-only")]
+    EV["upa eval answers / score"] --> A
+```
+
+An answer goes through two gates. The retrieval gate abstains without calling
+the model when nothing relevant is found. The model gate abstains when Claude
+replies `NO_ANSWER`, refuses, or cites nothing. Uncited model text is kept in the
+audit row for reviewers and never shown to users.
 
 ## Quickstart
 
-Requires Docker, [uv](https://docs.astral.sh/uv/), and Claude API credentials.
+Requires Docker and [uv](https://docs.astral.sh/uv/); uv installs Python 3.13.
 
 ```bash
-make setup
-make db-up
-uv run upa db migrate
-uv run upa ingest --manifest corpus/manifest.sample.yaml
-uv run upa stats
-
-export ANTHROPIC_API_KEY=...        # or use: ant auth login
-uv run upa user add alice --display-name Alice --role user --group all_staff --password-stdin
-UPA_SESSION_COOKIE_SECURE=false uv run upa serve --host 127.0.0.1 --port 8000
+export ANTHROPIC_API_KEY=...   # or: ant auth login
+make demo
 ```
 
-Open <http://127.0.0.1:8000> and log in as `alice`. The
-`UPA_SESSION_COOKIE_SECURE=false` override is only for plain-http local use;
-keep the default Secure cookies behind HTTPS.
+`make demo` starts PostgreSQL 17 with pgvector, applies the migrations, ingests
+the fictional sample corpus, creates a reviewer named `demo` with a random
+password it prints once, and serves the UI at <http://127.0.0.1:8000>. The first
+ingest downloads bge-m3 and bge-reranker-v2-m3 (about 4.6 GB) into the Hugging
+Face cache; afterwards `export HF_HUB_OFFLINE=1` keeps model loading local.
 
-The first `ingest` or API ask downloads bge-m3 and bge-reranker-v2-m3: about
-4.6 GB in total. Model files stay in the Hugging Face cache. Once cached,
-`export HF_HUB_OFFLINE=1` keeps loads fully local. The Claude API key is read by
-the Anthropic SDK from `ANTHROPIC_API_KEY` or an `ant auth login` profile; it is
-never written to this repository, logs, or audit rows.
-
-`upa corpus inspect --manifest corpus/manifest.sample.yaml` extracts and scores
-the corpus without touching the database. `upa eval retrieval --dataset
-evals/retrieval_seed.sample.jsonl` runs the four retrieval modes over the seed
-questions.
-
-## Web UI
-
-The UI is server-rendered Jinja2 with no build step, no CDN, and no external
-requests. It works with JavaScript disabled; the only script adds a
-"Thinking…" state to the ask button. Pages include:
-
-- login and an EN/اردو language toggle;
-- chat with per-message history and sentence-level citation links;
-- a reviewer queue and item view with retrieved context and review form.
-
-Urdu blocks carry their own `lang="ur" dir="rtl"`, independent of the UI
-toggle. The Noto Nastaliq Urdu font is self-hosted under
-`src/policy_assistant/web/static/fonts/` (OFL-1.1, pinned SHA-256), with a
-`local()` fallback first.
-
-## HTTP API session
-
-With the server running, a local plain-http session looks like this:
+The same steps by hand:
 
 ```bash
-curl -c "${TMPDIR:-/tmp}/upa-cookies.txt" -s -X POST http://127.0.0.1:8000/api/auth/login \
-  -H 'Content-Type: application/json' \
-  -d '{"username":"alice","password":"your-password"}'
+make setup && make db-up
+uv run upa db migrate
+uv run upa ingest --manifest corpus/manifest.sample.yaml
+uv run upa user add alice --display-name Alice --role reviewer --group all_staff
+UPA_SESSION_COOKIE_SECURE=false uv run upa serve
+```
 
-# Copy csrf_token from the login JSON, then:
-curl -b "${TMPDIR:-/tmp}/upa-cookies.txt" -s -X POST http://127.0.0.1:8000/api/ask \
+`UPA_SESSION_COOKIE_SECURE=false` is only for plain-http local use; keep Secure
+cookies behind HTTPS. The API key is read by the Anthropic SDK and is never
+written to the repository, logs, or audit rows.
+
+## Using it
+
+**Web UI.** Ask in Urdu or English, follow citation numbers to the cited
+sentences, and switch the interface between English and اردو. Reviewers and
+admins get a review queue showing, for each answer, what the user saw, the
+retrieved context with cited sentences highlighted, and a verdict form.
+
+**CLI.** The operator tool, which is trusted with database credentials:
+
+```bash
+uv run upa ask "ملازمین کو کتنے دن کی سالانہ چھٹی ملتی ہے؟" --group all_staff
+uv run upa retrieve "approval limits" --group finance --mode hybrid_rerank
+uv run upa audit list --limit 10
+uv run upa user list
+```
+
+**HTTP API.** JSON endpoints under `/api` (login, ask, history, review). The
+client never sends groups, roles, or user ids; the server reads them from the
+session on every request.
+
+```bash
+JAR="${TMPDIR:-/tmp}/upa-cookies.txt"
+CSRF=$(curl -s -c "$JAR" -X POST http://127.0.0.1:8000/api/auth/login \
   -H 'Content-Type: application/json' \
-  -H "X-CSRF-Token: $CSRF" \
+  -d '{"username":"alice","password":"your-password"}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["csrf_token"])')
+curl -s -b "$JAR" -X POST http://127.0.0.1:8000/api/ask \
+  -H 'Content-Type: application/json' -H "X-CSRF-Token: $CSRF" \
   -d '{"question":"How many days of annual leave do employees get?"}'
 ```
 
-Unauthenticated responses are 401. Unsafe methods without the CSRF header are
-403. The client never supplies groups, roles, or user ids; the server reads them
-from the session on every request.
+## Evaluation
 
-## What Phase 1 does
+```bash
+uv run upa eval answers --dataset evals/answers.sample.jsonl --split sample   # pipeline check
+uv run upa eval freeze  --dataset evals/answers.test.jsonl                    # once
+uv run upa eval answers --dataset evals/answers.test.jsonl --split test
+uv run upa eval score <run_id>
+uv run upa eval retrieval --dataset evals/retrieval_seed.sample.jsonl        # retrieval ablations
+```
 
-1. Validates `corpus/manifest.yaml` (or a `--manifest` override): unique ids,
-   at least one ACL group per document, pinned SHA-256, translation links.
-2. Extracts pages with pypdfium2 (PDF) or strict UTF-8 (TXT, split on form feed).
-3. Cleans display text, measures per-page quality, and quarantines documents
-   whose text layer is empty, private-use-heavy, wrong-script, low-lexicon, or
-   reversed.
-4. Chunks included pages on headings and sentence boundaries with the bge-m3
-   tokenizer, capped at 350 tokens with 50-token overlap.
-5. Stores documents, ACLs, all pages (included and excluded, with quality
-   JSON), and chunks in one transaction per document. Unchanged documents are
-   metadata/ACL-only updates, so chunk ids stay stable.
+Each question is asked as its own principal through the production answer path.
+Answers are scored by humans in the review UI against a written rubric, and
+reports stay `PRELIMINARY` until every item is scored. See
+[docs/EVALUATION.md](docs/EVALUATION.md) for the dataset format, rubric, and
+reporting rules.
 
-## What Phase 2 adds
+## Security
 
-1. Migration `0002_retrieval_index.sql`: a 1024-dimensional embedding column, a
-   BM25 length column, the `chunk_terms` inverted index, and an HNSW cosine
-   index.
-2. Shared `bm25_terms()` (Urdu folding, stopword removal, English Snowball
-   stemming) for both indexing and queries.
-3. bge-m3 embeddings and BM25 term counts written at ingest.
-4. `bm25`, `dense`, `hybrid`, and `hybrid_rerank` modes; ACL filtering inside
-   the BM25 and dense SQL.
-5. `upa eval retrieval` for hit@k, recall@k, MRR@k, leaks, and latency.
+Permissions are enforced in SQL and re-checked before the model call. Sessions
+are server-side with hashed tokens; passwords use Argon2id; every unsafe request
+needs a CSRF token; all output is autoescaped under a strict CSP; audit, review,
+and evaluation records are append-only in the database. The threat model and
+known gaps are in [docs/SECURITY.md](docs/SECURITY.md).
 
-## What Phase 3 adds
+## Limitations
 
-1. Migration `0003_answer_audit.sql`: an append-only audit table with
-   database-enforced `UPDATE`/`DELETE`/`TRUNCATE` rejection.
-2. Claude answers over one custom-content document per chunk, with each chunk
-   sentence as a citation block.
-3. A retrieval gate plus a model gate: missing evidence, `NO_ANSWER`, an
-   uncited answer, a refusal, or an API error all become a recorded non-answer.
-4. Identical user-facing abstention text for missing and restricted topics.
-5. `upa ask`, `upa audit list`, and `upa audit show`.
+- No accuracy results yet; see the status note above.
+- Prototype deployment: one process, no login rate limiting, no password reset
+  or SSO, no TLS termination (run it behind an HTTPS proxy).
+- Scanned PDFs without a text layer are quarantined, not OCRed.
+- Urdu normalization and sentence splitting are rule-based.
+- Questions and authorized policy text are sent to a third-party model API.
 
-## What Phase 4 adds
-
-1. Migration `0004_accounts_reviews.sql`: users, user groups, server-side
-   sessions, and append-only answer reviews.
-2. Argon2id passwords, SHA-256-hashed session tokens, HttpOnly/Secure/
-   SameSite=Strict cookies, and CSRF tokens for unsafe methods.
-3. An authenticated FastAPI with login, ask, history, reviewer queue, item, and
-   review endpoints; group and role changes apply to live sessions immediately.
-4. `upa user` for bootstrap and admin operations, and `upa serve` for uvicorn.
-5. ACL-filtered review queues where hidden and missing rows are both 404, and
-   error rows are available only with `outcome=error`.
-6. A server-rendered UI for login, chat, history, citations, review queue, and
-   review items, with an EN/اردو toggle and self-hosted Nastaliq font.
-
-## Layout
+## Project layout
 
 ```
 src/policy_assistant/
-  config.py               settings (UPA_ prefix, .env)
-  cli.py                  upa db | corpus | ingest | stats | retrieve | eval | ask | audit | user | serve
-  db/                     connection, migrations 0001–0004
-  text/                   normalize, language, sentences, terms, stopwords
-  ingest/                 manifest, fetch, extract, quality, tokens, chunker, pipeline
-  retrieval/              access, bm25, dense, fusion, retriever, models, readiness, evaluation
-  answering/              model client, prompts, documents, citations, service, audit store
-  auth/                   passwords, users, sessions
-  reviews/                review queue, review writes, history
-  api/                    FastAPI app, shared helpers, dependencies
-  web/                    Jinja templates, i18n, render helpers, static assets and font
-corpus/                   manifest.yaml, sample manifest, fictional samples
-evals/                    retrieval seed dataset
-tests/                    unit and integration tests
-docs/                     ROADMAP.md, ADRs
-docker/initdb/            test-database bootstrap
+  cli.py          upa: db, corpus, ingest, stats, retrieve, ask, audit, user, serve, eval
+  config.py       settings (UPA_ prefix, .env)
+  db/             connection, migrations 0001–0005
+  text/           normalization, language detection, sentences, BM25 terms
+  ingest/         manifest, fetch, extraction, quality gate, chunking, pipeline
+  retrieval/      ACLs, BM25, vectors, fusion, reranking, readiness, retrieval eval
+  answering/      Claude client, prompts, documents, citations, service, audit store
+  auth/           passwords, users, sessions
+  reviews/        review queue, verdicts, history
+  evaluation/     answer datasets, runner, scoring
+  api/            FastAPI app and shared helpers
+  web/            templates, i18n, rendering helpers, static assets and font
+corpus/           manifests and the fictional sample policies
+evals/            sample retrieval and answer datasets
+docs/             roadmap, evaluation protocol, security model, ADRs
+tests/            unit and integration tests
 ```
-
-Read [docs/ROADMAP.md](docs/ROADMAP.md) for all phases. Architecture decisions
-live in [docs/adr](docs/adr): single Postgres + pgvector, Urdu normalization,
-the extraction quality gate, default-deny ACLs, BM25 in SQL, hybrid retrieval,
-cited answers, the append-only audit log, accounts and sessions, the review
-workflow, and the server-rendered UI.
 
 ## Development
 
 ```bash
-make check            # format check, lint, mypy --strict, unit tests
-make test-integration # requires PostgreSQL; uses UPA_TEST_DATABASE_URL
-make fmt              # apply formatting
+make check             # format check, lint, mypy --strict, unit tests
+make test-integration  # needs the Docker database (test DB names must end in _test)
 ```
 
-Unit and integration tests use deterministic fakes and need no network or
-Claude API. Opt-in tests:
+Tests use deterministic fakes and need no network or Claude API. Opt-in suites:
+`UPA_MODEL_TESTS=1 uv run pytest -k real_model` loads the real models, and
+`UPA_LLM_TESTS=1 uv run pytest -k live_llm` calls Claude. Configuration is
+documented in [.env.example](.env.example).
 
-```bash
-UPA_MODEL_TESTS=1 uv run pytest -k real_model
-UPA_LLM_TESTS=1 uv run pytest -k live_llm   # needs real Claude credentials
-```
+Real corpora are never committed: a manifest stores each document's source URL
+and pinned SHA-256, and fetched files stay under `data/` (git-ignored).
 
-Integration tests refuse a database whose name does not end in `_test`, and fail
-instead of skipping when `UPA_REQUIRE_DB=1`.
+## Design decisions
 
-Configuration is documented in [.env.example](.env.example). Pinned revisions:
-tokenizer and embeddings `9a0624b896d81da7492a910ffa53731274b6cf3d`, reranker
-`953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e`. The default model is
-`claude-opus-5-5`.
+Twelve ADRs in [docs/adr](docs/adr):
+[single Postgres + pgvector](docs/adr/0001-single-postgres-pgvector.md),
+[Urdu normalization](docs/adr/0002-urdu-text-normalization.md),
+[fail-closed extraction](docs/adr/0003-extraction-quality-gate.md),
+[default-deny ACLs](docs/adr/0004-default-deny-acls.md),
+[BM25 in SQL](docs/adr/0005-bm25-in-sql.md),
+[hybrid retrieval](docs/adr/0006-hybrid-retrieval.md),
+[cited answers](docs/adr/0007-cited-answers.md),
+[append-only audit log](docs/adr/0008-append-only-audit-log.md),
+[accounts and sessions](docs/adr/0009-accounts-and-sessions.md),
+[review workflow](docs/adr/0010-review-workflow.md),
+[server-rendered UI](docs/adr/0011-server-rendered-ui.md), and
+[answer evaluation](docs/adr/0012-answer-evaluation.md).
+The phase history is in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## License
 
-MIT. The bundled Noto Nastaliq Urdu font is licensed under the SIL Open Font
-License 1.1; see `src/policy_assistant/web/static/fonts/OFL.txt`.
+MIT; see [LICENSE](LICENSE). The bundled Noto Nastaliq Urdu font is licensed
+under the SIL Open Font License 1.1
+(`src/policy_assistant/web/static/fonts/OFL.txt`).

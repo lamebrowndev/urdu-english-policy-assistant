@@ -10,3 +10,5 @@ dist/
 .DS_Store
 data/
 ._*
+.hypothesis/
+.playwright-mcp/
