@@ -1,0 +1,20 @@
+services:
+  db:
+    image: pgvector/pgvector:0.8.7-pg17
+    environment:
+      POSTGRES_USER: upa
+      POSTGRES_PASSWORD: upa_dev_password
+      POSTGRES_DB: upa
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - upa_pgdata:/var/lib/postgresql/data
+      - ./docker/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U upa -d upa"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  upa_pgdata:

@@ -1,0 +1,66 @@
+[project]
+name = "urdu-english-policy-assistant"
+version = "0.1.0"
+description = "Bilingual Urdu/English policy assistant with cited, access-controlled answers"
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+license = { text = "MIT" }
+authors = [{ name = "Muhammad Salman Ahmed" }]
+dependencies = [
+    "psycopg[binary]>=3.2.3,<4",
+    "pydantic>=2.10,<3",
+    "pydantic-settings>=2.7,<3",
+    "typer>=0.15,<1",
+    "pyyaml>=6.0,<7",
+    "pypdfium2>=4.30,<5",
+    "wordfreq>=3.1,<4",
+    "tokenizers>=0.21,<1",
+    "huggingface-hub>=0.27,<2",
+]
+
+[project.scripts]
+upa = "policy_assistant.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/policy_assistant"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: requires a running PostgreSQL database (set UPA_TEST_DATABASE_URL)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "DTZ", "RUF"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["policy_assistant"]
+
+[tool.mypy]
+strict = true
+plugins = ["pydantic.mypy"]
+mypy_path = "src"
+files = ["src"]
+
+[[tool.mypy.overrides]]
+module = ["pypdfium2.*", "wordfreq.*"]
+ignore_missing_imports = true
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+    "hypothesis>=6.120.0",
+    "mypy>=2.4.1",
+    "ruff>=0.17.3",
+    "types-PyYAML>=6.0.12",
+    "reportlab>=4.2.5",
+]
