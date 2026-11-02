@@ -166,6 +166,20 @@ def _older_url(path: str, cursor: tuple[datetime, uuid.UUID] | None) -> str | No
     return f"{path}?cursor={quote(_encode_cursor(cursor), safe='')}"
 
 
+def _review_older_url(
+    status: str,
+    outcome: str | None,
+    cursor: tuple[datetime, uuid.UUID] | None,
+) -> str | None:
+    if cursor is None:
+        return None
+    params = [f"status={quote(status, safe='')}"]
+    if outcome:
+        params.append(f"outcome={quote(outcome, safe='')}")
+    params.append(f"cursor={quote(_encode_cursor(cursor), safe='')}")
+    return "/review?" + "&".join(params)
+
+
 def _chat_page(
     request: Request,
     user: SessionUser,
@@ -397,7 +411,7 @@ def review_queue_page(
         "review_queue.html",
         status_code=200,
         items=items,
-        older_url=_older_url("/review", next_cursor),
+        older_url=_review_older_url(status, outcome, next_cursor),
         selected_status=status,
         selected_outcome=outcome,
         outcomes=OUTCOMES,
