@@ -13,10 +13,17 @@ from policy_assistant.retrieval.access import Principal, allowed_document_ids
 
 
 class Viewer(Protocol):
-    id: int
-    username: str
-    role: str
-    groups: frozenset[str]
+    @property
+    def id(self) -> int: ...
+
+    @property
+    def username(self) -> str: ...
+
+    @property
+    def role(self) -> str: ...
+
+    @property
+    def groups(self) -> frozenset[str]: ...
 
 
 class ReviewConflict(RuntimeError):
@@ -202,6 +209,8 @@ def add_review(
         ).fetchone()
     if inserted is None:
         raise RuntimeError("review insert returned no row")
+    if not conn.autocommit:
+        conn.commit()
     return {
         "id": str(inserted[0]),
         "audit_id": str(inserted[1]),

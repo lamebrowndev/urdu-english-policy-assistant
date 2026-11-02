@@ -974,5 +974,22 @@ def user_list() -> None:
         typer.echo(f"{user.username}  {user.role}  {state}  {groups}")
 
 
+@app.command("serve")
+def serve(
+    host: Annotated[str, typer.Option("--host", help="Bind host.")] = "127.0.0.1",
+    port: Annotated[int, typer.Option("--port", help="Bind port.")] = 8000,
+) -> None:
+    """Run the HTTP API with uvicorn."""
+    import uvicorn
+
+    uvicorn.run(
+        "policy_assistant.api.app:create_app_from_env",
+        factory=True,
+        host=host,
+        port=port,
+        workers=1,
+    )
+
+
 if __name__ == "__main__":
     app()

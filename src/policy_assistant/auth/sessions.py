@@ -41,6 +41,8 @@ def create_session(conn: psycopg.Connection[Any], user_id: int, ttl: int) -> tup
             """,
             (_hash_token(token), user_id, csrf_token, expires_at),
         )
+    if not conn.autocommit:
+        conn.commit()
     return token, csrf_token
 
 
@@ -76,3 +78,5 @@ def load_session(conn: psycopg.Connection[Any], token: str) -> SessionUser | Non
 def delete_session(conn: psycopg.Connection[Any], token: str) -> None:
     with conn.transaction():
         conn.execute("DELETE FROM sessions WHERE token_hash = %s", (_hash_token(token),))
+    if not conn.autocommit:
+        conn.commit()

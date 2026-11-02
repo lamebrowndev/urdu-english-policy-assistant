@@ -95,6 +95,8 @@ def create_user(
                     )
     except psycopg.errors.UniqueViolation as exc:
         raise ValueError(f"duplicate username: {normalized}") from exc
+    if not conn.autocommit:
+        conn.commit()
     user = get_user(conn, normalized)
     if user is None:
         raise RuntimeError("created user could not be loaded")
@@ -118,6 +120,8 @@ def set_user_groups(
                     "INSERT INTO user_groups (user_id, group_id) VALUES (%s, %s)",
                     [(user_id, group_id) for group_id in requested_groups],
                 )
+    if not conn.autocommit:
+        conn.commit()
 
 
 def set_user_role(conn: psycopg.Connection[Any], username: str, role: str) -> None:
@@ -130,6 +134,8 @@ def set_user_role(conn: psycopg.Connection[Any], username: str, role: str) -> No
         ).fetchone()
         if row is None:
             raise ValueError(f"unknown user: {normalized}")
+    if not conn.autocommit:
+        conn.commit()
 
 
 def set_user_active(conn: psycopg.Connection[Any], username: str, active: bool) -> None:
@@ -143,6 +149,8 @@ def set_user_active(conn: psycopg.Connection[Any], username: str, active: bool) 
             raise ValueError(f"unknown user: {normalized}")
         if not active:
             conn.execute("DELETE FROM sessions WHERE user_id = %s", (int(row[0]),))
+    if not conn.autocommit:
+        conn.commit()
 
 
 def get_user(conn: psycopg.Connection[Any], username: str) -> User | None:
