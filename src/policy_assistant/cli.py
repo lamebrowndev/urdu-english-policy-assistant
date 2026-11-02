@@ -236,7 +236,10 @@ def corpus_inspect(
         bool, typer.Option("--dump-text", help="Write cleaned pages for review.")
     ] = False,
 ) -> None:
-    """Extract and assess the corpus without touching the database."""
+    """Extract and assess the corpus without touching the database.
+
+    Exit 1 on any error, 2 if a document is quarantined, else 0.
+    """
     _configure_logging()
     try:
         manifest, manifest_path, settings = _load_manifest(manifest_option)
@@ -327,7 +330,9 @@ def corpus_inspect(
             _dump_page(dump_dir / document_id, number, text)
     for document_id, message in errors:
         typer.secho(f"{document_id}: error: {message}", err=True, fg=typer.colors.RED)
-    if errors or quarantined:
+    if errors:
+        raise typer.Exit(code=1)
+    if quarantined:
         raise typer.Exit(code=2)
 
 
@@ -357,7 +362,10 @@ def ingest_command(
         bool, typer.Option("--prune", help="Delete documents and groups absent from the manifest.")
     ] = False,
 ) -> None:
-    """Extract, quality-gate, chunk, and store selected documents."""
+    """Extract, quality-gate, chunk, and store selected documents.
+
+    Exit 1 on any error, 2 if a document is quarantined, else 0.
+    """
     _configure_logging()
     try:
         manifest, _, settings = _load_manifest(manifest_option)
