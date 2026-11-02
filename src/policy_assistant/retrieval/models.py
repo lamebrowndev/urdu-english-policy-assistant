@@ -57,6 +57,7 @@ class SentenceTransformerEmbedder:
             batch_size=self._batch_size,
             normalize_embeddings=True,
             convert_to_numpy=True,
+            show_progress_bar=False,
         )
         array: NDArray[np.float32] = np.asarray(vectors, dtype=np.float32)
         norms = np.linalg.norm(array, axis=1, keepdims=True)
@@ -84,5 +85,5 @@ class CrossEncoderReranker:
         if not passages:
             return []
         pairs = [(query, passage) for passage in passages]
-        scores = self._model.predict(pairs)
+        scores = self._model.predict(pairs, show_progress_bar=False)
         return [float(score) for score in np.asarray(scores).reshape(-1)]

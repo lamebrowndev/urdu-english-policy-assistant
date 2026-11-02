@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = Field(default=120.0, gt=0)
     llm_fallbacks: Literal["default", "off"] = "default"
     answer_mode: Literal["bm25", "dense", "hybrid", "hybrid_rerank"] = "hybrid_rerank"
-    abstain_min_rerank_score: float = 0.05
+    abstain_min_rerank_score: float = Field(default=0.05, ge=0.0, le=1.0)
 
     chunk_max_tokens: int = Field(default=350, gt=0)
     chunk_overlap_tokens: int = Field(default=50, ge=0)

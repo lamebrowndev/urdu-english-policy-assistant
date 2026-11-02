@@ -8,15 +8,16 @@ import json
 import logging
 import re
 import time
+import uuid
 from contextlib import closing
 from pathlib import Path
-from typing import Annotated, Any, cast
+from typing import Annotated, Any, cast, get_args
 
 import psycopg
 import typer
 
 from policy_assistant.answering.model import build_answer_model
-from policy_assistant.answering.service import AnswerResult
+from policy_assistant.answering.service import AnswerOutcome, AnswerResult
 from policy_assistant.answering.service import answer as run_answer
 from policy_assistant.config import Settings, find_repo_root, get_settings
 from policy_assistant.db.connection import connect, utc_now
@@ -803,6 +804,9 @@ def audit_list(
     if limit < 1:
         typer.secho("--limit must be at least 1", err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1)
+    if outcome is not None and outcome not in get_args(AnswerOutcome):
+        typer.secho(f"unknown outcome: {outcome}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1)
     settings = get_settings()
     try:
         with closing(connect(settings.database_url)) as conn:
@@ -840,6 +844,11 @@ def audit_show(
 ) -> None:
     """Pretty-print one audit row as JSON."""
     _configure_logging()
+    try:
+        audit_uuid = uuid.UUID(audit_id)
+    except ValueError as exc:
+        typer.secho(f"invalid audit id: {audit_id}", err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from exc
     settings = get_settings()
     try:
         with closing(connect(settings.database_url)) as conn:
@@ -851,7 +860,7 @@ def audit_show(
                 FROM answer_audit
                 WHERE id = %s
                 """,
-                (audit_id,),
+                (audit_uuid,),
             ).fetchone()
     except psycopg.Error as exc:
         typer.secho(f"database unavailable: {exc}", err=True, fg=typer.colors.RED)

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -31,7 +30,6 @@ def test_live_llm_english_urdu_and_restricted(
     sample_repo: Path,
     sample_manifest: Manifest,
     settings_for: Settings,
-    fake_counter: Callable[[str], int],
 ) -> None:
     settings = settings_for
     counter = load_bge_m3_counter(settings.tokenizer_repo, settings.tokenizer_revision)
