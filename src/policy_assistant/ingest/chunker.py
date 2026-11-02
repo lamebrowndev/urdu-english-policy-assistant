@@ -290,8 +290,9 @@ def chunk_document(
                     overlap = []
             current = list(overlap)
             current_overlap = len(overlap)
-            heading = pending_heading
-            pending_heading = None
+            if pending_heading is not None:
+                heading = pending_heading
+                pending_heading = None
             current.append((sentence.page, sentence.text))
 
     emit()
