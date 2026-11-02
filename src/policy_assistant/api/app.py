@@ -17,26 +17,23 @@ from fastapi.responses import JSONResponse
 from psycopg_pool import ConnectionPool
 from pydantic import BaseModel, ConfigDict, Field
 
-from policy_assistant.answering.language import answer_language
 from policy_assistant.answering.model import build_answer_model
 from policy_assistant.answering.prompts import error_text
-from policy_assistant.answering.service import answer
-from policy_assistant.auth.passwords import (
-    burn_verification,
-    hash_password,
-    needs_rehash,
-    verify_password,
+from policy_assistant.api.shared import (
+    SESSION_COOKIE,
+    AskBusy,
+    AskFailed,
+    authenticate,
+    clear_session_cookie,
+    run_ask,
+    session_user,
+    set_session_cookie,
+    validate_question,
 )
-from policy_assistant.auth.sessions import (
-    SessionUser,
-    create_session,
-    delete_session,
-    load_session,
-)
-from policy_assistant.auth.users import User, get_user, normalize_username
+from policy_assistant.auth.sessions import SessionUser, delete_session
+from policy_assistant.auth.users import User
 from policy_assistant.config import Settings, get_settings
 from policy_assistant.db.migrate import pending_migrations
-from policy_assistant.retrieval.access import Principal
 from policy_assistant.retrieval.models import (
     CrossEncoderReranker,
     Embedder,
@@ -59,7 +56,6 @@ from policy_assistant.reviews.store import (
 LOGGER = logging.getLogger(__name__)
 
 CSP = "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
-SESSION_COOKIE = "upa_session"
 
 
 class _LockedEmbedder:
@@ -145,11 +141,7 @@ def _decode_cursor(value: str | None) -> tuple[datetime, uuid.UUID] | None:
 
 
 def current_user(request: Request) -> SessionUser:
-    token = request.cookies.get(SESSION_COOKIE)
-    if not token:
-        raise HTTPException(status_code=401, detail="not authenticated")
-    with _pool(request).connection() as conn:
-        user = load_session(conn, token)
+    user = session_user(request)
     if user is None:
         raise HTTPException(status_code=401, detail="not authenticated")
     if (
@@ -227,39 +219,11 @@ def create_app(
 
     @api.post("/api/auth/login")
     def login(body: LoginBody, request: Request, response: Response) -> dict[str, Any]:
-        settings = _settings(request)
-        username = normalize_username(body.username)
-        with _pool(request).connection() as conn:
-            row = conn.execute(
-                "SELECT id, password_hash, is_active FROM users WHERE username = %s",
-                (username,),
-            ).fetchone()
-            if row is None or not bool(row[2]):
-                burn_verification(body.password)
-                raise HTTPException(status_code=401, detail="invalid username or password")
-            user_id = int(row[0])
-            password_hash = str(row[1])
-            if not verify_password(password_hash, body.password):
-                raise HTTPException(status_code=401, detail="invalid username or password")
-            if needs_rehash(password_hash):
-                with conn.transaction():
-                    conn.execute(
-                        "UPDATE users SET password_hash = %s WHERE id = %s",
-                        (hash_password(body.password), user_id),
-                    )
-            token, csrf_token = create_session(conn, user_id, settings.session_ttl_hours)
-            user = get_user(conn, username)
-        if user is None:
+        authenticated = authenticate(request, body.username, body.password)
+        if authenticated is None:
             raise HTTPException(status_code=401, detail="invalid username or password")
-        response.set_cookie(
-            SESSION_COOKIE,
-            token,
-            max_age=settings.session_ttl_hours * 3600,
-            httponly=True,
-            secure=settings.session_cookie_secure,
-            samesite="strict",
-            path="/",
-        )
+        user, token, csrf_token = authenticated
+        set_session_cookie(response, _settings(request), token)
         return {"user": _user_payload(user), "csrf_token": csrf_token}
 
     @api.post("/api/auth/logout")
@@ -272,13 +236,7 @@ def create_app(
         if token:
             with _pool(request).connection() as conn:
                 delete_session(conn, token)
-        response.delete_cookie(
-            SESSION_COOKIE,
-            path="/",
-            secure=_settings(request).session_cookie_secure,
-            httponly=True,
-            samesite="strict",
-        )
+        clear_session_cookie(response, _settings(request))
         response.status_code = 204
         return response
 
@@ -295,48 +253,32 @@ def create_app(
         user: Annotated[SessionUser, Depends(current_user)],
     ) -> Any:
         settings = _settings(request)
-        question = body.question.strip()
-        if not 1 <= len(question) <= settings.question_max_chars:
-            raise HTTPException(status_code=422, detail="invalid question length")
-        slots: threading.BoundedSemaphore = request.app.state.ask_slots
-        if not slots.acquire(timeout=settings.ask_queue_timeout_seconds):
-            raise HTTPException(status_code=503, detail="busy")
         try:
-            with _pool(request).connection() as conn:
-                result = answer(
-                    conn,
-                    question,
-                    Principal(user.groups),
-                    actor=f"user:{user.username}",
-                    embedder=request.app.state.embedder,
-                    reranker=request.app.state.reranker,
-                    model=request.app.state.answer_model,
-                    settings=settings,
-                )
-            return {
-                "audit_id": result.audit_id,
-                "status": _status(result.outcome),
-                "language": result.language,
-                "text": result.text,
-                "sources": list(result.sources),
-            }
-        except HTTPException:
-            raise
-        except Exception:
-            LOGGER.exception("ask failed")
-            language = answer_language(question)
+            question = validate_question(settings, body.question)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        try:
+            result = run_ask(request, user, question)
+        except AskBusy as exc:
+            raise HTTPException(status_code=503, detail="busy") from exc
+        except AskFailed as exc:
             return JSONResponse(
                 status_code=500,
                 content={
                     "status": "error",
-                    "language": language,
-                    "text": error_text(language),
+                    "language": exc.language,
+                    "text": error_text(exc.language),
                     "audit_id": None,
                     "sources": [],
                 },
             )
-        finally:
-            slots.release()
+        return {
+            "audit_id": result.audit_id,
+            "status": _status(result.outcome),
+            "language": result.language,
+            "text": result.text,
+            "sources": list(result.sources),
+        }
 
     @api.get("/api/history")
     def history_endpoint(

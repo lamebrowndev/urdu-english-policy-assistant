@@ -243,6 +243,10 @@ def history(
                CASE WHEN a.outcome = 'answered'
                     THEN COALESCE(a.answer->'sources', '[]'::jsonb)
                     ELSE '[]'::jsonb
+               END,
+               CASE WHEN a.outcome = 'answered'
+                    THEN COALESCE(a.answer->'segments', '[]'::jsonb)
+                    ELSE '[]'::jsonb
                END
         FROM answer_audit a
         WHERE {" AND ".join(clauses)}
@@ -266,6 +270,17 @@ def history(
             status = "abstained"
         else:
             status = "error"
+        segments: list[dict[str, Any]] = []
+        if status == "answered":
+            for segment in row[7] or []:
+                if not isinstance(segment, dict):
+                    continue
+                numbers: list[int] = []
+                for citation in segment.get("citations", []):
+                    number = citation.get("number") if isinstance(citation, dict) else None
+                    if isinstance(number, int) and number not in numbers:
+                        numbers.append(number)
+                segments.append({"text": str(segment.get("text", "")), "numbers": numbers})
         items.append(
             {
                 "audit_id": str(row[0]),
@@ -275,6 +290,7 @@ def history(
                 "language": row[3],
                 "text": row[5],
                 "sources": row[6] if status == "answered" else [],
+                "segments": segments,
             }
         )
     return items, next_cursor
