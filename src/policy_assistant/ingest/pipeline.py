@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
 import json
 import logging
 from dataclasses import dataclass
@@ -28,7 +29,7 @@ from policy_assistant.ingest.tokens import TokenCounter
 
 LOGGER = logging.getLogger(__name__)
 
-PIPELINE_VERSION = "1"
+PIPELINE_VERSION = "2"
 INGEST_ADVISORY_LOCK_ID = 0x757061696E67  # "upaing"
 
 
@@ -73,6 +74,10 @@ def pipeline_fingerprint(settings: Settings) -> str:
             "max_tokens": settings.chunk_max_tokens,
             "overlap_tokens": settings.chunk_overlap_tokens,
             "min_tokens": settings.chunk_min_tokens,
+        },
+        "libraries": {
+            "pypdfium2": importlib.metadata.version("pypdfium2"),
+            "wordfreq": importlib.metadata.version("wordfreq"),
         },
         "quality": {
             "min_chars": settings.quality_min_chars,
